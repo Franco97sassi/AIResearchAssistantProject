@@ -746,3 +746,18 @@ summary {
 .history-rail > .full-width + .full-width {
   margin-top: .75rem;
 }
+
+.active-document-notice {
+  background: rgba(125, 211, 252, .1);
+  border: 1px solid rgba(125, 211, 252, .22);
+  border-radius: 18px;
+  color: #bfdbfe;
+  font-size: .9rem;
+  font-weight: 800;
+  margin: 0 0 .85rem;
+  padding: .8rem 1rem;
+}
+
+.active-document-notice strong {
+  color: #f8fafc;
+}

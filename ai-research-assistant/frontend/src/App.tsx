@@ -342,6 +342,12 @@ function App() {
         question: normalizedQuestion,
         limit: String(searchLimit),
       });
+        if (activeDocumentId) {
+        params.set('document_id', activeDocumentId);
+      }
+      if (activeDocumentId) {
+        params.set('document_id', activeDocumentId);
+      }
       const response = await fetch(`${API_BASE_URL}/search?${params.toString()}`);
 
       if (!response.ok) {
@@ -378,6 +384,7 @@ function App() {
           question: normalizedQuestion,
           limit: 4,
           session_id: sessionId,
+          document_id: activeDocumentId,
         }),
       });
 
@@ -718,6 +725,11 @@ function App() {
               Streaming
             </button>
           </div>
+    {activeDocumentId && (
+            <p className="active-document-notice">
+              Consultando solo el PDF activo: <strong>{uploadResult?.filename}</strong>
+            </p>
+          )}
 
           <form className="question-form" onSubmit={handleQuestionSubmit}>
             <textarea

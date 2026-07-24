@@ -13,6 +13,7 @@ from app.agent import AgentStep, run_research_agent
 from app.chat_history import (
     append_chat_exchange,
     build_retrieval_query,
+    filter_history_for_document,
     get_recent_history,
     get_session,
     list_sessions,
@@ -114,14 +115,6 @@ app = FastAPI(
     title="AI Research Assistant",
     version="1.0.0",
     lifespan=lifespan,
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 
@@ -363,7 +356,8 @@ async def chat_with_pdfs(request: ChatRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
-    retrieval_query = build_retrieval_query(request.question, history)
+    scoped_history = filter_history_for_document(history, request.document_id)
+    retrieval_query = build_retrieval_query(request.question, scoped_history)
     results = await run_in_threadpool(       
         search_similar_chunks,
         question=retrieval_query,
@@ -371,7 +365,7 @@ async def chat_with_pdfs(request: ChatRequest):
         document_id=request.document_id,
     )
     rag_answer = await run_in_threadpool(
-        generate_rag_answer, request.question, results, history
+        generate_rag_answer, request.question, results, scoped_history
     )
     sources = [serialize_search_result(result) for result in results]
     answer_text = rag_answer.answer
@@ -409,14 +403,17 @@ async def stream_chat_with_pdfs(request: ChatRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
-    retrieval_query = build_retrieval_query(request.question, history)
+    scoped_history = filter_history_for_document(history, request.document_id)
+    retrieval_query = build_retrieval_query(request.question, scoped_history)
     results = await run_in_threadpool(
         search_similar_chunks,
         question=retrieval_query,
         limit=request.limit,
         document_id=request.document_id,
     ) 
-    rag_answer = await run_in_threadpool(generate_rag_answer, request.question, results, history)
+    rag_answer = await run_in_threadpool(
+        generate_rag_answer, request.question, results, scoped_history
+    )
     sources = [serialize_search_result(result) for result in results]
     await run_in_threadpool(append_chat_exchange, session_id=session_id, question=request.question, answer=rag_answer.answer, model=rag_answer.model, used_llm=rag_answer.used_llm, sources=sources)
     log_event("chat_stream", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__)
@@ -434,10 +431,11 @@ async def stream_chat_with_pdfs(request: ChatRequest):
 async def chat_with_research_agent(request: ChatRequest):
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
+    scoped_history = filter_history_for_document(history, request.document_id)
     agent_run = await run_in_threadpool(
         run_research_agent,
         question=request.question,
-        history=history,
+        history=scoped_history,
         limit=request.limit,
         document_id=request.document_id,
     )
@@ -467,3 +465,13 @@ async def chat_with_research_agent(request: ChatRequest):
         "included_contexts": agent_run.included_contexts,
         "history": session["messages"],
     }
+
+
+app = CORSMiddleware(
+    app=app,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

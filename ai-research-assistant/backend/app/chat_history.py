@@ -104,6 +104,31 @@ def get_recent_history(session_id: str, limit: int = MAX_MEMORY_EXCHANGES) -> li
         return []
     return messages[-limit:]
 
+def filter_history_for_document(
+    history: list[dict],
+    document_id: str | None,
+) -> list[dict]:
+    """Keep memory scoped to the active document when a document filter is used."""
+    normalized_document_id = (document_id or "").strip()
+    if not normalized_document_id:
+        return history
+
+    scoped_history = []
+    for message in history:
+        sources = message.get("sources", [])
+        if not isinstance(sources, list) or not sources:
+            scoped_history.append(message)
+            continue
+
+        if any(
+            isinstance(source, dict)
+            and str(source.get("document_id", "")).strip() == normalized_document_id
+            for source in sources
+        ):
+            scoped_history.append(message)
+
+    return scoped_history
+
 
 def append_chat_exchange(
     *,
