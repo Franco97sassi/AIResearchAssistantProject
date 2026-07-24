@@ -271,6 +271,8 @@ def _build_research_graph():
     graph.add_node("decidir", _decide_node)
     graph.add_node("buscar", _search_node)
     graph.add_node("evaluar_contexto", _evaluate_context_node)
+    graph.add_node("responder", _answer_node)
+    graph.add_node("verificar_citas", _cite_node)
     graph.add_edge("responder", "verificar_citas")
     graph.add_edge("verificar_citas", END)
     graph.set_entry_point("pensar")
@@ -282,7 +284,6 @@ def _build_research_graph():
     )
     graph.add_edge("buscar", "evaluar_contexto")
     graph.add_edge("evaluar_contexto", "responder")
-    graph.add_edge("responder", END)
     return graph.compile()
 
 

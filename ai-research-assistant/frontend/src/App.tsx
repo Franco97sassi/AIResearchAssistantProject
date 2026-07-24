@@ -16,24 +16,6 @@ type UploadResponse = {
   collection_name: string;
 };
 
-type InvoiceExtractionResponse = {
-  filename: string;
-  stored_filename: string;
-  page_count: number;
-  character_count: number;
-  extraction_method: string;
-  ocr_attempted: boolean;
-  ocr_available: boolean;
-  cliente: string;
-  importe: number;
-  moneda: string | null;
-  fecha: string | null;
-  numero_factura: string | null;
-  confidence: number;
-  missing_fields: string[];
-  text_preview: string;
-};
-
 type Source = {
   text: string;
   filename: string;
@@ -52,6 +34,7 @@ type AgentStep = {
   description: string;
   tool: string | null;
   decision: string | null;
+  role?: string | null;
 };
 
 type ChatHistoryMessage = {
@@ -206,10 +189,6 @@ function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploadError, setUploadError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
-  const [invoiceResult, setInvoiceResult] = useState<InvoiceExtractionResponse | null>(null);
-  const [invoiceError, setInvoiceError] = useState('');
-  const [isExtractingInvoice, setIsExtractingInvoice] = useState(false);
   const [searchQuestion, setSearchQuestion] = useState('');
   const [searchLimit, setSearchLimit] = useState(4);
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
@@ -243,72 +222,6 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadAiTopics() {
-      try {
-        const [topicsResponse, metricsResponse] = await Promise.all([
-          fetch(`${API_BASE_URL}/ai-topics`),
-          fetch(`${API_BASE_URL}/metrics`),
-        ]);
-        if (!topicsResponse.ok || !metricsResponse.ok) {
-          return;
-        }
-        const topicsPayload = (await topicsResponse.json()) as AiTopicsResponse;
-        const metricsPayload = (await metricsResponse.json()) as MetricsResponse;
-        if (!cancelled) {
-          setAiTopics(topicsPayload);
-          setMetrics(metricsPayload);
-        }
-      } catch {
-        if (!cancelled) {
-          setAiTopics(null);
-          setMetrics(null);
-        }
-      }
-    }
-
-    loadAiTopics();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadSession() {
-      setIsLoadingHistory(true);
-      try {
-        const response = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`);
-        if (!response.ok) {
-          throw new Error(await parseApiError(response));
-        }
-
-        const payload = (await response.json()) as ChatSessionResponse;
-        if (!cancelled) {
-          setChatMessages(payload.messages.map(mapHistoryMessage));
-        }
-      } catch {
-        if (!cancelled) {
-          setChatMessages([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingHistory(false);
-        }
-      }
-    }
-
-    loadSession();
-    refreshSessions();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
-
   async function handleUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setUploadError('');
@@ -339,39 +252,6 @@ function App() {
       setUploadError(error instanceof Error ? error.message : 'No se pudo subir el PDF.');
     } finally {
       setIsUploading(false);
-    }
-  }
-
-  async function handleInvoiceSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setInvoiceError('');
-    setInvoiceResult(null);
-
-    if (!invoiceFile) {
-      setInvoiceError('Selecciona una factura PDF antes de extraer datos.');
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', invoiceFile);
-    setIsExtractingInvoice(true);
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/extract-invoice`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(await parseApiError(response));
-      }
-
-      const payload = (await response.json()) as InvoiceExtractionResponse;
-      setInvoiceResult(payload);
-    } catch (error) {
-      setInvoiceError(error instanceof Error ? error.message : 'No se pudo extraer la factura.');
-    } finally {
-      setIsExtractingInvoice(false);
     }
   }
 
@@ -438,30 +318,59 @@ function App() {
       if (chatMode === 'stream' && response.body) {
         const optimisticId = crypto.randomUUID();
         const createdAt = new Date().toISOString();
+
         setChatMessages((messages) => [
           ...messages,
-          { id: optimisticId, question: normalizedQuestion, answer: '', model: 'streaming', usedLlm: true, sources: [], agentSteps: [], createdAt },
+          {
+            id: optimisticId,
+            question: normalizedQuestion,
+            answer: '',
+            model: 'streaming',
+            usedLlm: true,
+            sources: [],
+            agentSteps: [],
+            createdAt,
+          },
         ]);
+
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+
           buffer += decoder.decode(value, { stream: true });
           const events = buffer.split('\n\n');
           buffer = events.pop() ?? '';
+
           for (const eventBlock of events) {
             const dataLine = eventBlock.split('\n').find((line) => line.startsWith('data: '));
             if (!dataLine) continue;
+
             const data = JSON.parse(dataLine.slice(6));
+
             if ('token' in data) {
-              setChatMessages((messages) => messages.map((message) => message.id === optimisticId ? { ...message, answer: message.answer + data.token } : message));
+              setChatMessages((messages) =>
+                messages.map((message) =>
+                  message.id === optimisticId
+                    ? { ...message, answer: message.answer + data.token }
+                    : message,
+                ),
+              );
             }
+
             if ('session_id' in data) {
               localStorage.setItem(SESSION_STORAGE_KEY, data.session_id);
               setSessionId(data.session_id);
-              setChatMessages((messages) => messages.map((message) => message.id === optimisticId ? { ...message, model: data.model, sources: data.sources ?? [] } : message));
+              setChatMessages((messages) =>
+                messages.map((message) =>
+                  message.id === optimisticId
+                    ? { ...message, model: data.model, sources: data.sources ?? [] }
+                    : message,
+                ),
+              );
             }
           }
         }
@@ -471,6 +380,7 @@ function App() {
         setSessionId(payload.session_id);
         setChatMessages(payload.history.map(mapHistoryMessage));
       }
+
       setQuestion('');
       refreshSessions();
     } catch (error) {
@@ -483,6 +393,7 @@ function App() {
   async function handleEvaluateLastAnswer() {
     setEvaluationError('');
     setEvaluation(null);
+
     const lastMessage = chatMessages[chatMessages.length - 1];
     if (!lastMessage) {
       setEvaluationError('Haz una pregunta primero para evaluar la ultima respuesta.');
@@ -500,9 +411,11 @@ function App() {
           sources: lastMessage.sources,
         }),
       });
+
       if (!response.ok) {
         throw new Error(await parseApiError(response));
       }
+
       const payload = (await response.json()) as EvaluationResponse;
       setEvaluation(payload);
     } catch (error) {
@@ -529,25 +442,54 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">Nivel 11 - IA multimodal + RAG</p>
-          <h1>AI Research Assistant</h1>
+      <section className="hero hero-copy-block">
+        <div className="hero-content">
+          <p className="eyebrow">Portfolio project · RAG Agent</p>
+          <h1>Asistente IA para investigación documental</h1>
           <p className="hero-copy">
-            Sube PDFs, aplica OCR cuando haga falta, extrae facturas a JSON y conversa con un agente RAG con fuentes.
+            Una experiencia pulida para demostrar carga de PDFs, búsqueda semántica,
+            respuestas con fuentes, memoria conversacional, streaming y evaluación RAG.
           </p>
+          <div className="hero-actions">
+            <a className="primary-link" href="#chat-panel">Probar asistente</a>
+            <span className="api-pill">Sesión {sessionId.slice(0, 8)}</span>
+          </div>
         </div>
-        <div className="api-pill">Sesion: {sessionId.slice(0, 8)}</div>
+
+        <div className="portfolio-panel" aria-label="Resumen del proyecto">
+          <div className="terminal-card">
+            <span className="terminal-dot" />
+            <span className="terminal-dot" />
+            <span className="terminal-dot" />
+            <p>pipeline.status</p>
+            <strong>PDF → Chunks → Embeddings → ChromaDB → Agent</strong>
+          </div>
+
+          <div className="stat-grid">
+            <div>
+              <strong>{uploadResult?.chunks_indexed ?? '—'}</strong>
+              <span>chunks indexados</span>
+            </div>
+            <div>
+              <strong>{chatMessages.length}</strong>
+              <span>mensajes</span>
+            </div>
+            <div>
+              <strong>{metrics?.event_count ?? '—'}</strong>
+              <span>eventos</span>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <section className="grid-layout">
-        <div className="side-stack">
+      <section className="workspace">
+        <div className="tool-panel">
           <article className="card upload-card">
             <div className="card-heading">
-              <span className="step-number">1</span>
+              <span className="card-icon">PDF</span>
               <div>
-                <h2>Subir PDF</h2>
-                <p>El backend extrae texto, divide el documento e indexa los chunks en ChromaDB.</p>
+                <h2>Base de conocimiento</h2>
+                <p>Sube papers, apuntes o documentación. El backend extrae texto e indexa fragmentos consultables.</p>
               </div>
             </div>
 
@@ -561,141 +503,32 @@ function App() {
                 <span>{selectedFile ? selectedFile.name : 'Selecciona o arrastra un PDF'}</span>
                 {selectedFile && <small>{formatBytes(selectedFile.size)}</small>}
               </label>
+
               <button type="submit" disabled={isUploading}>
-                {isUploading ? 'Subiendo e indexando...' : 'Subir e indexar PDF'}
+                {isUploading ? 'Indexando...' : 'Subir e indexar'}
               </button>
             </form>
 
             {uploadError && <p className="status error">{uploadError}</p>}
-            {uploadResult && (
-              <div className="status success">
-                <strong>{uploadResult.message}</strong>
-                <dl>
-                  <div>
-                    <dt>Archivo</dt>
-                    <dd>{uploadResult.filename}</dd>
-                  </div>
-                  <div>
-                    <dt>Paginas</dt>
-                    <dd>{uploadResult.page_count}</dd>
-                  </div>
-                  <div>
-                    <dt>Chunks</dt>
-                    <dd>{uploadResult.chunks_indexed}</dd>
-                  </div>
-                  <div>
-                    <dt>Texto</dt>
-                    <dd>{uploadResult.character_count.toLocaleString()} caracteres</dd>
-                  </div>
-                  <div>
-                    <dt>Método</dt>
-                    <dd>{uploadResult.extraction_method.toUpperCase()}</dd>
-                  </div>
-                  <div>
-                    <dt>OCR</dt>
-                    <dd>{uploadResult.ocr_attempted ? 'Intentado' : 'No requerido'}</dd>
-                  </div>
-                </dl>
-                <p className="preview">{uploadResult.text_preview}</p>
-              </div>
-            )}
-          </article>
-
-          <article className="card invoice-card">
-            <div className="card-heading">
-              <span className="step-number">2</span>
-              <div>
-                <h2>Factura PDF a JSON</h2>
-                <p>Extrae cliente, importe, fecha y numero de factura con fallback OCR para PDFs escaneados.</p>
-              </div>
-            </div>
-
-            <form className="upload-form" onSubmit={handleInvoiceSubmit}>
-              <label className="file-dropzone compact">
-                <input
-                  accept="application/pdf"
-                  type="file"
-                  onChange={(event) => setInvoiceFile(event.target.files?.[0] ?? null)}
-                />
-                <span>{invoiceFile ? invoiceFile.name : 'Selecciona una factura PDF'}</span>
-                {invoiceFile && <small>{formatBytes(invoiceFile.size)}</small>}
-              </label>
-              <button type="submit" disabled={isExtractingInvoice}>
-                {isExtractingInvoice ? 'Extrayendo...' : 'Extraer JSON'}
-              </button>
-            </form>
-
-            {invoiceError && <p className="status error">{invoiceError}</p>}
-            {invoiceResult && (
-              <div className="status success">
-                <strong>Datos extraidos de {invoiceResult.filename}</strong>
-                <dl>
-                  <div>
-                    <dt>Cliente</dt>
-                    <dd>{invoiceResult.cliente || 'No detectado'}</dd>
-                  </div>
-                  <div>
-                    <dt>Importe</dt>
-                    <dd>
-                      {invoiceResult.moneda ? `${invoiceResult.moneda} ` : ''}
-                      {invoiceResult.importe}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Fecha</dt>
-                    <dd>{invoiceResult.fecha ?? 'No detectada'}</dd>
-                  </div>
-                  <div>
-                    <dt>Factura</dt>
-                    <dd>{invoiceResult.numero_factura ?? 'No detectada'}</dd>
-                  </div>
-                  <div>
-                    <dt>Confianza</dt>
-                    <dd>{Math.round(invoiceResult.confidence * 100)}%</dd>
-                  </div>
-                  <div>
-                    <dt>Método</dt>
-                    <dd>{invoiceResult.extraction_method.toUpperCase()}</dd>
-                  </div>
-                </dl>
-                {invoiceResult.missing_fields.length > 0 && (
-                  <p className="missing-fields">
-                    Faltan: {invoiceResult.missing_fields.join(', ')}
-                  </p>
-                )}
-                <pre className="json-preview">
-                  {JSON.stringify(
-                    {
-                      cliente: invoiceResult.cliente,
-                      importe: invoiceResult.importe,
-                      moneda: invoiceResult.moneda,
-                      fecha: invoiceResult.fecha,
-                      numero_factura: invoiceResult.numero_factura,
-                    },
-                    null,
-                    2,
-                  )}
-                </pre>
-              </div>
-            )}
           </article>
 
           <article className="card search-card">
             <div className="card-heading">
-              <span className="step-number">3</span>
+              <span className="card-icon">SRC</span>
               <div>
-                <h2>Buscar chunks</h2>
-                <p>Prueba el endpoint /search para inspeccionar los fragmentos recuperados antes de conversar.</p>
+                <h2>Explorar evidencia</h2>
+                <p>Inspecciona los fragmentos que recuperará el asistente antes de generar una respuesta.</p>
               </div>
             </div>
 
             <form className="search-form" onSubmit={handleSearchSubmit}>
               <textarea
-                placeholder="Ejemplo: Que se dice sobre metodologia?"
+                placeholder="Ejemplo: ¿Qué metodología usa el documento?"
                 rows={3}
                 value={searchQuestion}
                 onChange={(event) => setSearchQuestion(event.target.value)}
               />
+
               <label className="limit-control">
                 <span>Resultados</span>
                 <input
@@ -706,137 +539,25 @@ function App() {
                   onChange={(event) => setSearchLimit(Number(event.target.value))}
                 />
               </label>
+
               <button type="submit" disabled={isSearching}>
-                {isSearching ? 'Buscando...' : 'Buscar fragmentos'}
+                {isSearching ? 'Buscando...' : 'Buscar fuentes'}
               </button>
             </form>
-
-            {searchError && <p className="status error">{searchError}</p>}
-            {searchResult && (
-              <div className="status success">
-                <strong>{searchResult.results.length} resultados para: {searchResult.question}</strong>
-                {searchResult.results.length === 0 ? (
-                  <p className="muted">No se encontraron chunks indexados para esta busqueda.</p>
-                ) : (
-                  <ul className="sources-list search-results">
-                    {searchResult.results.map((source, index) => (
-                      <li key={`search-${source.document_id}-${source.page_number}-${index}`}>
-                        <strong>{source.filename} - pagina {source.page_number}</strong>
-                        <span className="source-distance">Distancia: {formatDistance(source.distance)}</span>
-                        <p>{source.text}</p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </article>
-
-          <article className="card coverage-card">
-            <div className="card-heading">
-              <span className="step-number">4</span>
-              <div>
-                <h2>Cobertura AI Engineer</h2>
-                <p>Temas gratuitos agregados al proyecto sin depender de APIs pagas.</p>
-              </div>
-            </div>
-
-            {aiTopics ? (
-              <>
-                <div className="topic-cloud">
-                  {aiTopics.covered.map((topic) => (
-                    <span key={topic}>{topic}</span>
-                  ))}
-                </div>
-                <p className="muted">
-                  Excluidos a proposito por costo: {aiTopics.intentionally_excluded_paid_model_apis.join(', ')}.
-                </p>
-              </>
-            ) : (
-              <p className="muted">No se pudo cargar la cobertura de temas.</p>
-            )}
-
-            {metrics && (
-              <dl className="metrics-grid">
-                <div>
-                  <dt>Eventos</dt>
-                  <dd>{metrics.event_count}</dd>
-                </div>
-                <div>
-                  <dt>Latencia media</dt>
-                  <dd>{metrics.average_latency_ms} ms</dd>
-                </div>
-                <div>
-                  <dt>Tokens estimados</dt>
-                  <dd>{metrics.total_estimated_tokens}</dd>
-                </div>
-                <div>
-                  <dt>Fuentes promedio</dt>
-                  <dd>{metrics.average_source_count}</dd>
-                </div>
-              </dl>
-            )}
-
-            <button className="secondary-button" type="button" onClick={handleEvaluateLastAnswer} disabled={isEvaluating}>
-              {isEvaluating ? 'Evaluando...' : 'Evaluar ultima respuesta RAG'}
-            </button>
-            {evaluationError && <p className="status error">{evaluationError}</p>}
-            {evaluation && (
-              <div className="evaluation-panel">
-                <strong>Riesgo de alucinacion: {evaluation.hallucination_risk}</strong>
-                <span>Faithfulness: {Math.round(evaluation.faithfulness * 100)}%</span>
-                <span>Precision contexto: {Math.round(evaluation.context_precision * 100)}%</span>
-                <span>Recall proxy: {Math.round(evaluation.context_recall_proxy * 100)}%</span>
-                <span>{evaluation.grounded ? 'Grounding validado' : 'Revisar grounding'}</span>
-                {evaluation.notes.length > 0 && <small>{evaluation.notes.join(' ')}</small>}
-              </div>
-            )}
-          </article>
-
-          <article className="card history-card">
-            <div className="card-heading">
-              <span className="step-number">5</span>
-              <div>
-                <h2>Historial</h2>
-                <p>{chatMessages.length} mensajes en la sesion actual.</p>
-              </div>
-            </div>
-
-            <button className="secondary-button" type="button" onClick={handleNewSession}>
-              Nueva conversacion
-            </button>
-
-            <div className="session-list">
-              {sessions.length === 0 ? (
-                <p className="muted">Todavia no hay conversaciones guardadas.</p>
-              ) : (
-                sessions.map((session) => (
-                  <button
-                    className={`session-button ${
-                      session.session_id === sessionId ? 'active' : ''
-                    }`}
-                    key={session.session_id}
-                    type="button"
-                    onClick={() => handleSelectSession(session.session_id)}
-                  >
-                    <strong>{session.last_question || 'Conversacion sin titulo'}</strong>
-                    <span>
-                      {session.message_count} mensajes - {formatDate(session.updated_at)}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
           </article>
         </div>
 
-        <article className="card chat-card">
-          <div className="card-heading">
-            <span className="step-number">6</span>
+        <article className="card chat-card" id="chat-panel">
+          <div className="chat-header">
             <div>
+              <p className="eyebrow">Demo interactiva</p>
               <h2>Preguntar al asistente</h2>
-              <p>El modo agente usa un flujo tipo LangGraph: pensar, buscar, usar herramientas y decidir.</p>
+              <p>El modo agente ejecuta un grafo con roles de coordinación, búsqueda, crítica y citación.</p>
             </div>
+
+            <button className="secondary-button" type="button" onClick={handleNewSession}>
+              Nueva conversación
+            </button>
           </div>
 
           <div className="mode-toggle" role="group" aria-label="Modo de chat">
@@ -847,29 +568,32 @@ function App() {
             >
               Agente IA
             </button>
+
             <button
               className={chatMode === 'rag' ? 'active' : ''}
               type="button"
               onClick={() => setChatMode('rag')}
             >
-              RAG clasico
+              RAG clásico
             </button>
+
             <button
               className={chatMode === 'stream' ? 'active' : ''}
               type="button"
               onClick={() => setChatMode('stream')}
             >
-              Streaming SSE
+              Streaming
             </button>
           </div>
 
           <form className="question-form" onSubmit={handleQuestionSubmit}>
             <textarea
-              placeholder="Ejemplo: Cual es la idea principal del paper?"
+              placeholder="Ejemplo: Resume el documento y cita las páginas más relevantes."
               rows={4}
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
             />
+
             <button type="submit" disabled={!canAsk}>
               {isAsking ? 'Consultando...' : 'Enviar pregunta'}
             </button>
@@ -878,69 +602,90 @@ function App() {
           {chatError && <p className="status error">{chatError}</p>}
 
           <div className="messages" aria-live="polite">
-            {isLoadingHistory ? (
+            {chatMessages.length === 0 ? (
               <div className="empty-state">
-                <strong>Cargando historial.</strong>
-                <span>Recuperando la conversacion guardada.</span>
-              </div>
-            ) : chatMessages.length === 0 ? (
-              <div className="empty-state">
-                <strong>Aun no hay preguntas.</strong>
-                <span>Sube un PDF y empieza una conversacion con memoria.</span>
+                <strong>Listo para la demo.</strong>
+                <span>Sube un PDF y pregunta sobre su contenido.</span>
               </div>
             ) : (
               chatMessages.map((message) => (
                 <section className="message" key={message.id}>
                   <p className="question">{message.question}</p>
                   <p className="answer">{message.answer}</p>
+
                   <div className="message-meta">
                     <span>Modelo: {message.model}</span>
                     <span>{message.usedLlm ? 'LLM activo' : 'Fallback local'}</span>
                     <span>{formatDate(message.createdAt)}</span>
                   </div>
-                  {message.agentSteps.length > 0 && (
-                    <details className="agent-steps" open>
-                      <summary>Pasos del agente</summary>
-                      <ol>
-                        {message.agentSteps.map((step, index) => (
-                          <li key={`${message.id}-step-${index}`}>
-                            <strong>{step.name}</strong>
-                            <span>{step.description}</span>
-                            {(step.tool || step.decision) && (
-                              <small>
-                                {step.tool ? `Herramienta: ${step.tool}` : ''}
-                                {step.tool && step.decision ? ' - ' : ''}
-                                {step.decision ? `Decision: ${step.decision}` : ''}
-                              </small>
-                            )}
-                          </li>
-                        ))}
-                      </ol>
-                    </details>
-                  )}
-                  {message.sources.length > 0 && (
-                    <details>
-                      <summary>Fuentes recuperadas ({message.sources.length})</summary>
-                      <ul className="sources-list">
-                        {message.sources.map((source, index) => (
-                          <li key={`${source.document_id}-${source.page_number}-${index}`}>
-                            <strong>
-                              {source.filename} - pagina {source.page_number}
-                            </strong>
-                            <span className="source-distance">
-                              Distancia: {formatDistance(source.distance)}
-                            </span>
-                            <p>{source.text}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
                 </section>
               ))
             )}
           </div>
         </article>
+
+        <aside className="history-rail">
+          <div className="rail-heading">
+            <h2>Panel de control</h2>
+            <p>Métricas, evaluación e historial para mostrar el proyecto de forma profesional.</p>
+          </div>
+
+          {aiTopics && (
+            <div className="topic-cloud">
+              {aiTopics.covered.slice(0, 10).map((topic) => (
+                <span key={topic}>{topic}</span>
+              ))}
+            </div>
+          )}
+
+          {metrics && (
+            <dl className="metrics-grid">
+              <div>
+                <dt>Eventos</dt>
+                <dd>{metrics.event_count}</dd>
+              </div>
+              <div>
+                <dt>Latencia</dt>
+                <dd>{metrics.average_latency_ms} ms</dd>
+              </div>
+              <div>
+                <dt>Tokens</dt>
+                <dd>{metrics.total_estimated_tokens}</dd>
+              </div>
+              <div>
+                <dt>Fuentes</dt>
+                <dd>{metrics.average_source_count}</dd>
+              </div>
+            </dl>
+          )}
+
+          <button
+            className="secondary-button full-width"
+            type="button"
+            onClick={handleEvaluateLastAnswer}
+            disabled={isEvaluating}
+          >
+            {isEvaluating ? 'Evaluando...' : 'Evaluar última respuesta'}
+          </button>
+
+          <div className="session-list">
+            {sessions.length === 0 ? (
+              <p className="muted">Sin conversaciones guardadas.</p>
+            ) : (
+              sessions.map((session) => (
+                <button
+                  className={`session-button ${session.session_id === sessionId ? 'active' : ''}`}
+                  key={session.session_id}
+                  type="button"
+                  onClick={() => handleSelectSession(session.session_id)}
+                >
+                  <strong>{session.last_question || 'Conversación sin título'}</strong>
+                  <span>{session.message_count} mensajes · {formatDate(session.updated_at)}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </aside>
       </section>
     </main>
   );

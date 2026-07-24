@@ -291,6 +291,17 @@ async def upload_pdf(file: UploadFile = File(...)):
     }
 
 
+@app.get("/search")
+def search_pdf_chunks(
+    question: str = Query(..., min_length=1),
+    limit: int = Query(default=4, ge=1, le=10),
+):
+    results = search_similar_chunks(question=question, limit=limit)
+    return {
+        "question": question,
+        "results": [serialize_search_result(result) for result in results],
+    }
+
 @app.post("/extract-invoice", response_model=InvoiceExtractionResponse)
 async def extract_invoice(file: UploadFile = File(...)):
     original_filename, safe_filename, destination, _bytes_written = (
