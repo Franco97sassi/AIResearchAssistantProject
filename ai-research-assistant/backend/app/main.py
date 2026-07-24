@@ -78,7 +78,10 @@ class ChatRequest(BaseModel):
         le=10,
         description="Cantidad máxima de fragmentos relevantes a recuperar",
     )
-
+    document_id: str | None = Field(
+        default=None,
+        description="Opcional: limita la recuperación a un PDF indexado concreto",
+    )
 
 def serialize_search_result(result: SearchResult) -> dict[str, object]:
     return {
@@ -291,16 +294,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     }
 
 
-@app.get("/search")
-def search_pdf_chunks(
-    question: str = Query(..., min_length=1),
-    limit: int = Query(default=4, ge=1, le=10),
-):
-    results = search_similar_chunks(question=question, limit=limit)
-    return {
-        "question": question,
-        "results": [serialize_search_result(result) for result in results],
-    }
+ 
 
 @app.post("/extract-invoice", response_model=InvoiceExtractionResponse)
 async def extract_invoice(file: UploadFile = File(...)):
@@ -340,8 +334,11 @@ async def extract_invoice(file: UploadFile = File(...)):
 def search_pdf_chunks(
     question: str = Query(..., min_length=1),
     limit: int = Query(default=4, ge=1, le=10),
+    document_id: str | None = Query(default=None),
 ):
-    results = search_similar_chunks(question=question, limit=limit)
+    results = search_similar_chunks(
+        question=question, limit=limit, document_id=document_id
+    )
     return {
         "question": question,
         "results": [serialize_search_result(result) for result in results],
@@ -367,8 +364,11 @@ async def chat_with_pdfs(request: ChatRequest):
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
     retrieval_query = build_retrieval_query(request.question, history)
-    results = await run_in_threadpool(
-        search_similar_chunks, question=retrieval_query, limit=request.limit
+    results = await run_in_threadpool(       
+        search_similar_chunks,
+        question=retrieval_query,
+        limit=request.limit,
+        document_id=request.document_id,
     )
     rag_answer = await run_in_threadpool(
         generate_rag_answer, request.question, results, history
@@ -410,7 +410,12 @@ async def stream_chat_with_pdfs(request: ChatRequest):
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
     retrieval_query = build_retrieval_query(request.question, history)
-    results = await run_in_threadpool(search_similar_chunks, question=retrieval_query, limit=request.limit)
+    results = await run_in_threadpool(
+        search_similar_chunks,
+        question=retrieval_query,
+        limit=request.limit,
+        document_id=request.document_id,
+    ) 
     rag_answer = await run_in_threadpool(generate_rag_answer, request.question, results, history)
     sources = [serialize_search_result(result) for result in results]
     await run_in_threadpool(append_chat_exchange, session_id=session_id, question=request.question, answer=rag_answer.answer, model=rag_answer.model, used_llm=rag_answer.used_llm, sources=sources)
@@ -434,6 +439,7 @@ async def chat_with_research_agent(request: ChatRequest):
         question=request.question,
         history=history,
         limit=request.limit,
+        document_id=request.document_id,
     )
     sources = [serialize_search_result(result) for result in agent_run.sources]
     agent_steps = [serialize_agent_step(step) for step in agent_run.steps]

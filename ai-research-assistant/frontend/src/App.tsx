@@ -100,6 +100,24 @@ type EvaluationResponse = {
   notes: string[];
 };
 
+type InvoiceResponse = {
+  filename: string;
+  stored_filename: string;
+  page_count: number;
+  character_count: number;
+  extraction_method: string;
+  ocr_attempted: boolean;
+  ocr_available: boolean;
+  cliente: string;
+  importe: number;
+  moneda: string | null;
+  fecha: string | null;
+  numero_factura: string | null;
+  confidence: number;
+  missing_fields: string[];
+  text_preview: string;
+};
+
 type ChatMode = 'rag' | 'agent' | 'stream';
 
 type ChatMessage = {
@@ -154,7 +172,7 @@ async function parseApiError(response: Response): Promise<string> {
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** exponent;
   return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
@@ -186,7 +204,9 @@ function App() {
   const [sessionId, setSessionId] = useState(getInitialSessionId);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
+  const activeDocumentId = uploadResult?.document_id ?? null;
   const [uploadError, setUploadError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [searchQuestion, setSearchQuestion] = useState('');
@@ -205,8 +225,57 @@ function App() {
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
   const [evaluationError, setEvaluationError] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [invoiceResult, setInvoiceResult] = useState<InvoiceResponse | null>(null);
+  const [invoiceError, setInvoiceError] = useState('');
+  const [isExtractingInvoice, setIsExtractingInvoice] = useState(false);
 
   const canAsk = useMemo(() => question.trim().length > 0 && !isAsking, [isAsking, question]);
+
+  useEffect(() => {
+    refreshSessions();
+    refreshProjectStatus();
+  }, []);
+
+  useEffect(() => {
+    async function loadSelectedSession() {
+      setIsLoadingHistory(true);
+      try {
+        const response = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`);
+        if (!response.ok) {
+          throw new Error(await parseApiError(response));
+        }
+
+        const payload = (await response.json()) as ChatSessionResponse;
+        setChatMessages(payload.messages.map(mapHistoryMessage));
+      } catch {
+        setChatMessages([]);
+      } finally {
+        setIsLoadingHistory(false);
+      }
+    }
+
+    loadSelectedSession();
+  }, [sessionId]);
+
+  async function refreshProjectStatus() {
+    try {
+      const [topicsResponse, metricsResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/ai-topics`),
+        fetch(`${API_BASE_URL}/metrics`),
+      ]);
+
+      if (topicsResponse.ok) {
+        setAiTopics((await topicsResponse.json()) as AiTopicsResponse);
+      }
+
+      if (metricsResponse.ok) {
+        setMetrics((await metricsResponse.json()) as MetricsResponse);
+      }
+    } catch {
+      setAiTopics(null);
+      setMetrics(null);
+    }
+  }
 
   async function refreshSessions() {
     try {
@@ -248,6 +317,7 @@ function App() {
 
       const payload = (await response.json()) as UploadResponse;
       setUploadResult(payload);
+      refreshProjectStatus();
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : 'No se pudo subir el PDF.');
     } finally {
@@ -383,10 +453,43 @@ function App() {
 
       setQuestion('');
       refreshSessions();
+      refreshProjectStatus();
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'No se pudo responder la pregunta.');
     } finally {
       setIsAsking(false);
+    }
+  }
+
+  async function handleExtractInvoice(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setInvoiceError('');
+    setInvoiceResult(null);
+
+    if (!invoiceFile) {
+      setInvoiceError('Selecciona una factura PDF para extraer sus campos.');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', invoiceFile);
+    setIsExtractingInvoice(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/extract-invoice`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(await parseApiError(response));
+      }
+
+      setInvoiceResult((await response.json()) as InvoiceResponse);
+    } catch (error) {
+      setInvoiceError(error instanceof Error ? error.message : 'No se pudo extraer la factura.');
+    } finally {
+      setIsExtractingInvoice(false);
     }
   }
 
@@ -510,6 +613,20 @@ function App() {
             </form>
 
             {uploadError && <p className="status error">{uploadError}</p>}
+            {uploadResult && (
+              <div className="status success">
+                <strong>{uploadResult.message}</strong>
+                <dl>
+                  <div><dt>Archivo</dt><dd>{uploadResult.filename}</dd></div>
+                  <div><dt>Tamaño</dt><dd>{formatBytes(uploadResult.size_bytes)}</dd></div>
+                  <div><dt>Páginas</dt><dd>{uploadResult.page_count}</dd></div>
+                  <div><dt>Caracteres</dt><dd>{uploadResult.character_count}</dd></div>
+                  <div><dt>Chunks</dt><dd>{uploadResult.chunks_indexed}</dd></div>
+                  <div><dt>Extracción</dt><dd>{uploadResult.extraction_method}</dd></div>
+                </dl>
+                <pre className="preview">{uploadResult.text_preview}</pre>
+              </div>
+            )}
           </article>
 
           <article className="card search-card">
@@ -544,6 +661,22 @@ function App() {
                 {isSearching ? 'Buscando...' : 'Buscar fuentes'}
               </button>
             </form>
+
+            {searchError && <p className="status error">{searchError}</p>}
+            {searchResult && (
+              <div className="search-results">
+                <p className="muted">{searchResult.results.length} fuentes para: {searchResult.question}</p>
+                <ol className="sources-list">
+                  {searchResult.results.map((source) => (
+                    <li key={`${source.document_id}-${source.page_number}-${source.distance}`}>
+                      <strong>{source.filename} · pág. {source.page_number}</strong>
+                      <span className="source-distance">Distancia: {formatDistance(source.distance)}</span>
+                      <p>{source.text}</p>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
           </article>
         </div>
 
@@ -618,6 +751,38 @@ function App() {
                     <span>{message.usedLlm ? 'LLM activo' : 'Fallback local'}</span>
                     <span>{formatDate(message.createdAt)}</span>
                   </div>
+
+                  {message.agentSteps.length > 0 && (
+                    <details className="agent-steps">
+                      <summary>Pasos del agente</summary>
+                      <ol>
+                        {message.agentSteps.map((step, index) => (
+                          <li key={`${message.id}-${step.name}-${index}`}>
+                            <strong>{step.name}{step.role ? ` · ${step.role}` : ''}</strong>
+                            <span>{step.description}</span>
+                            {(step.tool || step.decision) && (
+                              <small>{step.tool ? `Herramienta: ${step.tool}` : ''}{step.tool && step.decision ? ' · ' : ''}{step.decision ? `Decisión: ${step.decision}` : ''}</small>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+
+                  {message.sources.length > 0 && (
+                    <details className="sources-panel" open>
+                      <summary>Fuentes recuperadas</summary>
+                      <ol className="sources-list">
+                        {message.sources.map((source, index) => (
+                          <li key={`${message.id}-${source.document_id}-${index}`}>
+                            <strong>{source.filename} · pág. {source.page_number}</strong>
+                            <span className="source-distance">Distancia: {formatDistance(source.distance)}</span>
+                            <p>{source.text}</p>
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
                 </section>
               ))
             )}
@@ -659,6 +824,10 @@ function App() {
             </dl>
           )}
 
+          <button className="secondary-button full-width" type="button" onClick={refreshProjectStatus}>
+            Actualizar métricas y temas
+          </button>
+
           <button
             className="secondary-button full-width"
             type="button"
@@ -668,7 +837,49 @@ function App() {
             {isEvaluating ? 'Evaluando...' : 'Evaluar última respuesta'}
           </button>
 
+          {evaluationError && <p className="status error">{evaluationError}</p>}
+          {evaluation && (
+            <div className="evaluation-panel">
+              <strong>Evaluación RAG</strong>
+              <span>Faithfulness: {evaluation.faithfulness}</span>
+              <span>Precisión contexto: {evaluation.context_precision}</span>
+              <span>Cobertura fuentes: {evaluation.source_coverage}</span>
+              <span>Riesgo: {evaluation.hallucination_risk}</span>
+              <span>{evaluation.grounded ? 'Respuesta grounded' : 'Revisar grounding'}</span>
+            </div>
+          )}
+
+          {/* <form className="invoice-form" onSubmit={handleExtractInvoice}>
+            <label className="mini-file">
+              <span>{invoiceFile ? invoiceFile.name : 'Factura PDF'}</span>
+              <input
+                accept="application/pdf"
+                type="file"
+                onChange={(event) => setInvoiceFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+             <button className="secondary-button full-width" type="submit" disabled={isExtractingInvoice}>
+              {isExtractingInvoice ? 'Extrayendo...' : 'Extraer factura'}
+            </button>  
+          </form> */}
+
+          {invoiceError && <p className="status error">{invoiceError}</p>}
+          {invoiceResult && (
+            <div className="evaluation-panel">
+              <strong>Factura extraída</strong>
+              <span>Cliente: {invoiceResult.cliente || 'No detectado'}</span>
+              <span>Importe: {invoiceResult.importe} {invoiceResult.moneda ?? ''}</span>
+              <span>Fecha: {invoiceResult.fecha ?? 'No detectada'}</span>
+              <span>Número: {invoiceResult.numero_factura ?? 'No detectado'}</span>
+              <span>Confianza: {invoiceResult.confidence}</span>
+              {invoiceResult.missing_fields.length > 0 && (
+                <small>Faltan: {invoiceResult.missing_fields.join(', ')}</small>
+              )}
+            </div>
+          )}
+
           <div className="session-list">
+            {isLoadingHistory && <p className="muted">Cargando historial...</p>}
             {sessions.length === 0 ? (
               <p className="muted">Sin conversaciones guardadas.</p>
             ) : (

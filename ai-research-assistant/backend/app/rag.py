@@ -250,8 +250,24 @@ def _result_key(result: SearchResult) -> tuple[str, int, str]:
     return (result.document_id, result.page_number, result.text[:80])
 
 
-def _dense_search(question: str, limit: int, collection: Collection) -> list[SearchResult]:
-    results = collection.query(query_texts=[question], n_results=limit)
+def _build_document_filter(document_id: str | None) -> dict[str, str] | None:
+    normalized_document_id = (document_id or "").strip()
+    if not normalized_document_id:
+        return None
+    return {"document_id": normalized_document_id}
+
+
+def _dense_search(
+    question: str,
+    limit: int,
+    collection: Collection,
+    document_id: str | None = None,
+) -> list[SearchResult]:
+    where = _build_document_filter(document_id)
+    query_kwargs = {"query_texts": [question], "n_results": limit}
+    if where is not None:
+        query_kwargs["where"] = where
+    results = collection.query(**query_kwargs)
     documents = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
     distances = results.get("distances", [[]])[0]
@@ -266,9 +282,17 @@ def _dense_search(question: str, limit: int, collection: Collection) -> list[Sea
         for document, metadata, distance in zip(documents, metadatas, distances, strict=False)
     ]
 
-
-def _bm25_search(question: str, limit: int, collection: Collection) -> list[SearchResult]:
-    stored = collection.get(include=["documents", "metadatas"])
+def _bm25_search(
+    question: str,
+    limit: int,
+    collection: Collection,
+    document_id: str | None = None,
+) -> list[SearchResult]:
+    where = _build_document_filter(document_id)
+    get_kwargs = {"include": ["documents", "metadatas"]}
+    if where is not None:
+        get_kwargs["where"] = where
+    stored = collection.get(**get_kwargs)
     documents = stored.get("documents", [])
     metadatas = stored.get("metadatas", [])
     if not documents:
@@ -299,6 +323,7 @@ def _rerank(question: str, results: list[SearchResult], limit: int) -> list[Sear
 def search_similar_chunks(
     question: str,
     limit: int = 4,
+    document_id: str | None = None,
     collection: Collection | None = None,
 ) -> list[SearchResult]:
     """Find relevant chunks using dense, BM25, or hybrid retrieval plus optional reranking."""
@@ -308,13 +333,13 @@ def search_similar_chunks(
     target_collection = collection or get_collection()
     mode = RETRIEVAL_MODE if RETRIEVAL_MODE in {"dense", "bm25", "hybrid"} else "dense"
     if mode == "bm25":
-        return _rerank(normalized_question, _bm25_search(normalized_question, limit * 3, target_collection), limit)
+        return _rerank(normalized_question, _bm25_search(normalized_question, limit * 3, target_collection, document_id), limit)
     if mode == "hybrid":
         merged: dict[tuple[str, int, str], SearchResult] = {}
-        for result in _dense_search(normalized_question, limit * 3, target_collection) + _bm25_search(normalized_question, limit * 3, target_collection):
+        for result in _dense_search(normalized_question, limit * 3, target_collection, document_id) + _bm25_search(normalized_question, limit * 3, target_collection, document_id):
             merged.setdefault(_result_key(result), result)
         return _rerank(normalized_question, list(merged.values()), limit)
-    return _rerank(normalized_question, _dense_search(normalized_question, limit * 3, target_collection), limit)
+    return _rerank(normalized_question, _dense_search(normalized_question, limit * 3, target_collection, document_id), limit)
 
 def list_indexed_documents(collection: Collection | None = None) -> list[dict[str, object]]:
     """Return a compact inventory of PDF documents stored in ChromaDB."""

@@ -295,16 +295,26 @@ def run_research_agent(
     question: str,
     history: list[dict] | None = None,
     limit: int = 4,
+    document_id: str | None = None,
     search_tool: SearchTool = search_similar_chunks,
     answer_tool: AnswerTool = generate_rag_answer,
 ) -> AgentRun:
     """Run the PDF research agent as a real LangGraph state graph."""
+    def scoped_search_tool(query: str, result_limit: int) -> list[SearchResult]:
+        if document_id:
+            return search_similar_chunks(
+                query,
+                limit=result_limit,
+                document_id=document_id,
+            )
+        return search_tool(query, result_limit)
+
     initial_state: ResearchAgentState = {
         "question": question,
         "normalized_question": "",
         "history": history or [],
         "limit": limit,
-        "search_tool": search_tool,
+        "search_tool": scoped_search_tool,
         "answer_tool": answer_tool,
         "steps": [],
         "needs_search": False,
