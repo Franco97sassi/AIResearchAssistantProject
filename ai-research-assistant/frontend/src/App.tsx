@@ -42,6 +42,11 @@ type Source = {
   distance: number | null;
 };
 
+type SearchResponse = {
+  question: string;
+  results: Source[];
+};
+
 type AgentStep = {
   name: string;
   description: string;
@@ -85,6 +90,31 @@ type SessionSummary = {
   updated_at: string;
   message_count: number;
   last_question: string;
+};
+
+type AiTopicsResponse = {
+  free_first: boolean;
+  covered: string[];
+  intentionally_excluded_paid_model_apis: string[];
+  next_steps: string[];
+};
+
+type MetricsResponse = {
+  event_count: number;
+  average_latency_ms: number;
+  total_estimated_tokens: number;
+  average_source_count: number;
+};
+
+type EvaluationResponse = {
+  faithfulness: number;
+  context_precision: number;
+  context_recall_proxy: number;
+  hallucination_risk: string;
+  grounded: boolean;
+  source_coverage: number;
+  estimated_answer_tokens: number;
+  notes: string[];
 };
 
 type ChatMode = 'rag' | 'agent' | 'stream';
@@ -180,12 +210,22 @@ function App() {
   const [invoiceResult, setInvoiceResult] = useState<InvoiceExtractionResponse | null>(null);
   const [invoiceError, setInvoiceError] = useState('');
   const [isExtractingInvoice, setIsExtractingInvoice] = useState(false);
+  const [searchQuestion, setSearchQuestion] = useState('');
+  const [searchLimit, setSearchLimit] = useState(4);
+  const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
+  const [searchError, setSearchError] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
   const [question, setQuestion] = useState('');
   const [chatMode, setChatMode] = useState<ChatMode>('agent');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState('');
   const [isAsking, setIsAsking] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [aiTopics, setAiTopics] = useState<AiTopicsResponse | null>(null);
+  const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
+  const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [evaluationError, setEvaluationError] = useState('');
+  const [isEvaluating, setIsEvaluating] = useState(false);
 
   const canAsk = useMemo(() => question.trim().length > 0 && !isAsking, [isAsking, question]);
 
@@ -202,6 +242,38 @@ function App() {
       setSessions([]);
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAiTopics() {
+      try {
+        const [topicsResponse, metricsResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/ai-topics`),
+          fetch(`${API_BASE_URL}/metrics`),
+        ]);
+        if (!topicsResponse.ok || !metricsResponse.ok) {
+          return;
+        }
+        const topicsPayload = (await topicsResponse.json()) as AiTopicsResponse;
+        const metricsPayload = (await metricsResponse.json()) as MetricsResponse;
+        if (!cancelled) {
+          setAiTopics(topicsPayload);
+          setMetrics(metricsPayload);
+        }
+      } catch {
+        if (!cancelled) {
+          setAiTopics(null);
+          setMetrics(null);
+        }
+      }
+    }
+
+    loadAiTopics();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -303,6 +375,38 @@ function App() {
     }
   }
 
+  async function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSearchError('');
+    setSearchResult(null);
+
+    const normalizedQuestion = searchQuestion.trim();
+    if (!normalizedQuestion) {
+      setSearchError('Escribe una consulta para buscar fragmentos relevantes.');
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const params = new URLSearchParams({
+        question: normalizedQuestion,
+        limit: String(searchLimit),
+      });
+      const response = await fetch(`${API_BASE_URL}/search?${params.toString()}`);
+
+      if (!response.ok) {
+        throw new Error(await parseApiError(response));
+      }
+
+      const payload = (await response.json()) as SearchResponse;
+      setSearchResult(payload);
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'No se pudo ejecutar la busqueda.');
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
   async function handleQuestionSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setChatError('');
@@ -373,6 +477,38 @@ function App() {
       setChatError(error instanceof Error ? error.message : 'No se pudo responder la pregunta.');
     } finally {
       setIsAsking(false);
+    }
+  }
+
+  async function handleEvaluateLastAnswer() {
+    setEvaluationError('');
+    setEvaluation(null);
+    const lastMessage = chatMessages[chatMessages.length - 1];
+    if (!lastMessage) {
+      setEvaluationError('Haz una pregunta primero para evaluar la ultima respuesta.');
+      return;
+    }
+
+    setIsEvaluating(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/evaluation/rag`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: lastMessage.question,
+          answer: lastMessage.answer,
+          sources: lastMessage.sources,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await parseApiError(response));
+      }
+      const payload = (await response.json()) as EvaluationResponse;
+      setEvaluation(payload);
+    } catch (error) {
+      setEvaluationError(error instanceof Error ? error.message : 'No se pudo evaluar la respuesta.');
+    } finally {
+      setIsEvaluating(false);
     }
   }
 
@@ -544,9 +680,122 @@ function App() {
             )}
           </article>
 
-          <article className="card history-card">
+          <article className="card search-card">
             <div className="card-heading">
               <span className="step-number">3</span>
+              <div>
+                <h2>Buscar chunks</h2>
+                <p>Prueba el endpoint /search para inspeccionar los fragmentos recuperados antes de conversar.</p>
+              </div>
+            </div>
+
+            <form className="search-form" onSubmit={handleSearchSubmit}>
+              <textarea
+                placeholder="Ejemplo: Que se dice sobre metodologia?"
+                rows={3}
+                value={searchQuestion}
+                onChange={(event) => setSearchQuestion(event.target.value)}
+              />
+              <label className="limit-control">
+                <span>Resultados</span>
+                <input
+                  max={10}
+                  min={1}
+                  type="number"
+                  value={searchLimit}
+                  onChange={(event) => setSearchLimit(Number(event.target.value))}
+                />
+              </label>
+              <button type="submit" disabled={isSearching}>
+                {isSearching ? 'Buscando...' : 'Buscar fragmentos'}
+              </button>
+            </form>
+
+            {searchError && <p className="status error">{searchError}</p>}
+            {searchResult && (
+              <div className="status success">
+                <strong>{searchResult.results.length} resultados para: {searchResult.question}</strong>
+                {searchResult.results.length === 0 ? (
+                  <p className="muted">No se encontraron chunks indexados para esta busqueda.</p>
+                ) : (
+                  <ul className="sources-list search-results">
+                    {searchResult.results.map((source, index) => (
+                      <li key={`search-${source.document_id}-${source.page_number}-${index}`}>
+                        <strong>{source.filename} - pagina {source.page_number}</strong>
+                        <span className="source-distance">Distancia: {formatDistance(source.distance)}</span>
+                        <p>{source.text}</p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </article>
+
+          <article className="card coverage-card">
+            <div className="card-heading">
+              <span className="step-number">4</span>
+              <div>
+                <h2>Cobertura AI Engineer</h2>
+                <p>Temas gratuitos agregados al proyecto sin depender de APIs pagas.</p>
+              </div>
+            </div>
+
+            {aiTopics ? (
+              <>
+                <div className="topic-cloud">
+                  {aiTopics.covered.map((topic) => (
+                    <span key={topic}>{topic}</span>
+                  ))}
+                </div>
+                <p className="muted">
+                  Excluidos a proposito por costo: {aiTopics.intentionally_excluded_paid_model_apis.join(', ')}.
+                </p>
+              </>
+            ) : (
+              <p className="muted">No se pudo cargar la cobertura de temas.</p>
+            )}
+
+            {metrics && (
+              <dl className="metrics-grid">
+                <div>
+                  <dt>Eventos</dt>
+                  <dd>{metrics.event_count}</dd>
+                </div>
+                <div>
+                  <dt>Latencia media</dt>
+                  <dd>{metrics.average_latency_ms} ms</dd>
+                </div>
+                <div>
+                  <dt>Tokens estimados</dt>
+                  <dd>{metrics.total_estimated_tokens}</dd>
+                </div>
+                <div>
+                  <dt>Fuentes promedio</dt>
+                  <dd>{metrics.average_source_count}</dd>
+                </div>
+              </dl>
+            )}
+
+            <button className="secondary-button" type="button" onClick={handleEvaluateLastAnswer} disabled={isEvaluating}>
+              {isEvaluating ? 'Evaluando...' : 'Evaluar ultima respuesta RAG'}
+            </button>
+            {evaluationError && <p className="status error">{evaluationError}</p>}
+            {evaluation && (
+              <div className="evaluation-panel">
+                <strong>Riesgo de alucinacion: {evaluation.hallucination_risk}</strong>
+                <span>Faithfulness: {Math.round(evaluation.faithfulness * 100)}%</span>
+                <span>Precision contexto: {Math.round(evaluation.context_precision * 100)}%</span>
+                <span>Recall proxy: {Math.round(evaluation.context_recall_proxy * 100)}%</span>
+                <span>{evaluation.grounded ? 'Grounding validado' : 'Revisar grounding'}</span>
+                {evaluation.notes.length > 0 && <small>{evaluation.notes.join(' ')}</small>}
+              </div>
+            )}
+          </article>
+
+          <article className="card history-card">
+            <div className="card-heading">
+              <span className="step-number">5</span>
               <div>
                 <h2>Historial</h2>
                 <p>{chatMessages.length} mensajes en la sesion actual.</p>
@@ -583,7 +832,7 @@ function App() {
 
         <article className="card chat-card">
           <div className="card-heading">
-            <span className="step-number">4</span>
+            <span className="step-number">6</span>
             <div>
               <h2>Preguntar al asistente</h2>
               <p>El modo agente usa un flujo tipo LangGraph: pensar, buscar, usar herramientas y decidir.</p>

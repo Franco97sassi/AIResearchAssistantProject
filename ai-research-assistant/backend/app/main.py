@@ -20,12 +20,14 @@ from app.chat_history import (
 )
 from app.config import (
     ALLOWED_ORIGINS,
+    ALLOWED_ORIGIN_REGEX,
     MAX_UPLOAD_SIZE_BYTES,
     MAX_UPLOAD_SIZE_MB,
     UPLOAD_DIR,
 )
 from app.invoice import extract_invoice_fields
 from app.guardrails import answer_has_required_sources, inspect_text
+from app.evaluation import evaluate_rag_response
 from app.llm import generate_rag_answer
 from app.observability import collect_metrics, init_observability, log_event
 from app.pdf_loader import extract_text_from_pdf
@@ -48,6 +50,20 @@ class InvoiceExtractionResponse(BaseModel):
     confidence: float
     missing_fields: list[str]
     text_preview: str
+
+
+class SearchResultPayload(BaseModel):
+    text: str
+    filename: str
+    page_number: int
+    document_id: str
+    distance: float | None = None
+
+
+class RAGEvaluationRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    answer: str = Field(..., min_length=1)
+    sources: list[SearchResultPayload] = Field(default_factory=list)
 
 
 class ChatRequest(BaseModel):
@@ -99,6 +115,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,6 +135,70 @@ def health():
 @app.get("/metrics")
 def metrics():
     return collect_metrics()
+
+
+@app.get("/ai-topics")
+def ai_topics():
+    return {
+        "free_first": True,
+        "covered": [
+            "RAG",
+            "Chunking",
+            "Embeddings",
+            "Metadata",
+            "Vector Search",
+            "Semantic Search",
+            "Hybrid Search",
+            "Reranking",
+            "Grounding",
+            "Citations",
+            "MCP Server Tools",
+            "LangChain adapters",
+            "LangGraph-style agents",
+            "Agent reflection/context critique",
+            "PII detection",
+            "Prompt injection guardrails",
+            "Token/context optimization",
+            "Streaming SSE",
+            "Local AI metrics",
+            "Deterministic RAG evaluation",
+            "Document understanding with OCR",
+        ],
+        "intentionally_excluded_paid_model_apis": [
+            "OpenAI",
+            "Anthropic",
+            "Gemini",
+            "Mistral",
+            "DeepSeek",
+            "OpenRouter",
+        ],
+        "next_steps": [
+            "Add FAISS or Qdrant as an optional local vector store",
+            "Add prompt version files for prompt management",
+            "Add a local feedback endpoint for human-in-the-loop review",
+            "Add multimodal image understanding only if a local VLM is available",
+        ],
+    }
+
+
+@app.post("/evaluation/rag")
+def evaluate_rag(request: RAGEvaluationRequest):
+    sources = [
+        SearchResult(
+            text=source.text,
+            filename=source.filename,
+            page_number=source.page_number,
+            document_id=source.document_id,
+            distance=source.distance,
+        )
+        for source in request.sources
+    ]
+    evaluation = evaluate_rag_response(
+        question=request.question,
+        answer=request.answer,
+        sources=sources,
+    )
+    return evaluation.__dict__
 
 
 async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:

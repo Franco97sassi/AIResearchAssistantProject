@@ -271,8 +271,8 @@ def _build_research_graph():
     graph.add_node("decidir", _decide_node)
     graph.add_node("buscar", _search_node)
     graph.add_node("evaluar_contexto", _evaluate_context_node)
-    graph.add_node("responder", _answer_node)
- 
+    graph.add_edge("responder", "verificar_citas")
+    graph.add_edge("verificar_citas", END)
     graph.set_entry_point("pensar")
     graph.add_edge("pensar", "decidir")
     graph.add_conditional_edges(
@@ -322,7 +322,8 @@ def run_research_agent(
         answer=rag_answer.answer,
         model=rag_answer.model,
         used_llm=rag_answer.used_llm,
-        sources=final_state.get("verified_sources") or final_state["results"],        steps=final_state["steps"],
+        sources=final_state.get("verified_sources") or final_state["results"],
+        steps=final_state["steps"],
         estimated_prompt_tokens=rag_answer.estimated_prompt_tokens,
         included_contexts=rag_answer.included_contexts,
     )

@@ -1,267 +1,452 @@
+from contextlib import asynccontextmanager
+import json
+import time
 from pathlib import Path
+from uuid import uuid4
 
-import fitz
-from fastapi.testclient import TestClient
-
-from app.config import UPLOAD_DIR
-from app.main import app
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
+from app.agent import AgentStep, run_research_agent
+from app.chat_history import (
+    append_chat_exchange,
+    build_retrieval_query,
+    get_recent_history,
+    get_session,
+    list_sessions,
+    normalize_session_id,
+)
+from app.config import (
+    ALLOWED_ORIGINS,
+    ALLOWED_ORIGIN_REGEX,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_UPLOAD_SIZE_MB,
+    UPLOAD_DIR,
+)
+from app.invoice import extract_invoice_fields
+from app.guardrails import answer_has_required_sources, inspect_text
+from app.evaluation import evaluate_rag_response
+from app.llm import generate_rag_answer
+from app.observability import collect_metrics, init_observability, log_event
 from app.pdf_loader import extract_text_from_pdf
-from app.rag import SearchResult
-
-client = TestClient(app)
+from app.rag import SearchResult, index_pdf_text, search_similar_chunks
 
 
-def create_pdf(path: Path, text: str = "Machine learning research notes") -> Path:
-    document = fitz.open()
-    page = document.new_page()
-    page.insert_text((72, 72), text)
-    document.save(path)
-    document.close()
-    return path
+class InvoiceExtractionResponse(BaseModel):
+    filename: str
+    stored_filename: str
+    page_count: int
+    character_count: int
+    extraction_method: str
+    ocr_attempted: bool
+    ocr_available: bool
+    cliente: str
+    importe: float
+    moneda: str | None
+    fecha: str | None
+    numero_factura: str | None
+    confidence: float
+    missing_fields: list[str]
+    text_preview: str
 
 
-def test_extract_text_from_pdf_reads_page_text(tmp_path):
-    pdf_path = create_pdf(tmp_path / "paper.pdf", "Retrieval augmented generation")
-
-    result = extract_text_from_pdf(pdf_path)
-
-    assert result.page_count == 1
-    assert "Retrieval augmented generation" in result.text
-    assert result.character_count > 0
+class SearchResultPayload(BaseModel):
+    text: str
+    filename: str
+    page_number: int
+    document_id: str
+    distance: float | None = None
 
 
-def test_upload_pdf_returns_extraction_metadata(tmp_path, monkeypatch):
-    pdf_path = create_pdf(tmp_path / "paper.pdf", "AI research assistant content")
-
-    class FakeIndexingResult:
-        document_id = "doc-test"
-        chunks_indexed = 1
-        collection_name = "research_papers"
-
-    monkeypatch.setattr("app.main.index_pdf_text", lambda *args: FakeIndexingResult())
-
-    with pdf_path.open("rb") as pdf_file:
-        response = client.post(
-            "/upload-pdf",
-            files={"file": ("paper.pdf", pdf_file, "application/pdf")},
-        )
-
-    assert response.status_code == 201
-    payload = response.json()
-    assert "PDF subido" in payload["message"]
-    assert payload["filename"] == "paper.pdf"
-    assert payload["page_count"] == 1
-    assert payload["character_count"] > 0
-    assert "AI research assistant content" in payload["text_preview"]
-    assert payload["document_id"] == "doc-test"
-    assert payload["chunks_indexed"] == 1
-    assert payload["collection_name"] == "research_papers"
-    stored_path = UPLOAD_DIR / payload["stored_filename"]
-    stored_path.unlink(missing_ok=True)
+class RAGEvaluationRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    answer: str = Field(..., min_length=1)
+    sources: list[SearchResultPayload] = Field(default_factory=list)
 
 
-def test_chat_returns_answer_with_sources_and_history(monkeypatch):
-    fake_results = [
+class ChatRequest(BaseModel):
+    question: str = Field(..., min_length=1, description="Pregunta sobre los PDFs")
+    session_id: str | None = Field(
+        default=None,
+        description="Identificador de la conversación para historial y memoria",
+    )
+    limit: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        description="Cantidad máxima de fragmentos relevantes a recuperar",
+    )
+
+
+def serialize_search_result(result: SearchResult) -> dict[str, object]:
+    return {
+        "text": result.text,
+        "filename": result.filename,
+        "page_number": result.page_number,
+        "document_id": result.document_id,
+        "distance": result.distance,
+    }
+
+
+def serialize_agent_step(step: AgentStep) -> dict[str, object]:
+    return {
+        "name": step.name,
+        "description": step.description,
+        "tool": step.tool,
+        "decision": step.decision,
+        "role": getattr(step, "role", None),
+    }
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    init_observability()
+    yield
+
+
+app = FastAPI(
+    title="AI Research Assistant",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+def root():
+    return {"message": "AI Research Assistant API funcionando"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "ai-research-assistant"}
+
+
+@app.get("/metrics")
+def metrics():
+    return collect_metrics()
+
+
+@app.get("/ai-topics")
+def ai_topics():
+    return {
+        "free_first": True,
+        "covered": [
+            "RAG",
+            "Chunking",
+            "Embeddings",
+            "Metadata",
+            "Vector Search",
+            "Semantic Search",
+            "Hybrid Search",
+            "Reranking",
+            "Grounding",
+            "Citations",
+            "MCP Server Tools",
+            "LangChain adapters",
+            "LangGraph-style agents",
+            "Agent reflection/context critique",
+            "PII detection",
+            "Prompt injection guardrails",
+            "Token/context optimization",
+            "Streaming SSE",
+            "Local AI metrics",
+            "Deterministic RAG evaluation",
+            "Document understanding with OCR",
+        ],
+        "intentionally_excluded_paid_model_apis": [
+            "OpenAI",
+            "Anthropic",
+            "Gemini",
+            "Mistral",
+            "DeepSeek",
+            "OpenRouter",
+        ],
+        "next_steps": [
+            "Add FAISS or Qdrant as an optional local vector store",
+            "Add prompt version files for prompt management",
+            "Add a local feedback endpoint for human-in-the-loop review",
+            "Add multimodal image understanding only if a local VLM is available",
+        ],
+    }
+
+
+@app.post("/evaluation/rag")
+def evaluate_rag(request: RAGEvaluationRequest):
+    sources = [
         SearchResult(
-            text="RAG combines retrieval with a language model.",
-            filename="rag-paper.pdf",
-            page_number=2,
-            document_id="doc-rag",
-            distance=0.12,
+            text=source.text,
+            filename=source.filename,
+            page_number=source.page_number,
+            document_id=source.document_id,
+            distance=source.distance,
         )
+        for source in request.sources
     ]
-
-    class FakeRAGAnswer:
-        answer = "RAG combina recuperacion con generacion."
-        model = "test-model"
-        used_llm = True
-
-    def fake_append_chat_exchange(**kwargs):
-        return {
-            "session_id": kwargs["session_id"],
-            "messages": [
-                {
-                    "id": "message-test",
-                    "question": kwargs["question"],
-                    "answer": kwargs["answer"],
-                    "model": kwargs["model"],
-                    "used_llm": kwargs["used_llm"],
-                    "sources": kwargs["sources"],
-                    "created_at": "2026-06-07T00:00:00Z",
-                }
-            ],
-        }
-
-    monkeypatch.setattr(
-        "app.main.search_similar_chunks", lambda *args, **kwargs: fake_results
+    evaluation = evaluate_rag_response(
+        question=request.question,
+        answer=request.answer,
+        sources=sources,
     )
-    monkeypatch.setattr("app.main.generate_rag_answer", lambda *args: FakeRAGAnswer())
-    monkeypatch.setattr("app.main.get_recent_history", lambda *args, **kwargs: [])
-    monkeypatch.setattr("app.main.append_chat_exchange", fake_append_chat_exchange)
-
-    response = client.post(
-        "/chat",
-        json={
-            "question": "Que es RAG?",
-            "limit": 1,
-            "session_id": "session-test",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["session_id"] == "session-test"
-    assert payload["question"] == "Que es RAG?"
-    assert payload["answer"] == "RAG combina recuperacion con generacion."
-    assert payload["model"] == "test-model"
-    assert payload["used_llm"] is True
-    assert payload["sources"][0]["filename"] == "rag-paper.pdf"
-    assert payload["sources"][0]["page_number"] == 2
-    assert payload["history"][0]["question"] == "Que es RAG?"
+    return evaluation.__dict__
 
 
-def test_chat_rejects_empty_question():
-    response = client.post("/chat", json={"question": "", "limit": 1})
-
-    assert response.status_code == 422
-
-
-def test_cors_allows_local_react_frontend():
-    response = client.options(
-        "/chat",
-        headers={
-            "Origin": "http://localhost:5173",
-            "Access-Control-Request-Method": "POST",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
-
-def test_agent_chat_returns_steps_and_history(monkeypatch):
-    class FakeStep:
-        name = "buscar"
-        description = "Use busqueda semantica."
-        tool = "search_similar_chunks"
-        decision = "contexto_encontrado"
-
-    class FakeAgentRun:
-        answer = "Respuesta agentica."
-        model = "test-agent"
-        used_llm = False
-        sources = [
-            SearchResult(
-                text="Agent context",
-                filename="agent.pdf",
-                page_number=4,
-                document_id="doc-agent",
-                distance=0.2,
-            )
-        ]
-        steps = [FakeStep()]
-        framework = "langgraph"
-        estimated_prompt_tokens = 42
-        included_contexts = 1
-
-    def fake_append_chat_exchange(**kwargs):
-        return {
-            "session_id": kwargs["session_id"],
-            "messages": [
-                {
-                    "id": "message-agent",
-                    "question": kwargs["question"],
-                    "answer": kwargs["answer"],
-                    "model": kwargs["model"],
-                    "used_llm": kwargs["used_llm"],
-                    "sources": kwargs["sources"],
-                    "agent_steps": kwargs["agent_steps"],
-                    "created_at": "2026-06-10T00:00:00Z",
-                }
-            ],
-        }
-
-    monkeypatch.setattr("app.main.get_recent_history", lambda *args, **kwargs: [])
-    monkeypatch.setattr("app.main.run_research_agent", lambda **kwargs: FakeAgentRun())
-    monkeypatch.setattr("app.main.append_chat_exchange", fake_append_chat_exchange)
-
-    response = client.post(
-        "/agent/chat",
-        json={
-            "question": "Como funciona el agente?",
-            "limit": 1,
-            "session_id": "session-agent",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["answer"] == "Respuesta agentica."
-    assert payload["agent_framework"] == "langgraph"
-    assert payload["agent_steps"][0]["tool"] == "search_similar_chunks"
-    assert payload["sources"][0]["filename"] == "agent.pdf"
-    assert payload["history"][0]["agent_steps"][0]["decision"] == "contexto_encontrado"
-
-def test_extract_invoice_returns_structured_fields(tmp_path):
-    invoice_text = """
-    Factura: FAC-2026-001
-    Fecha: 2026-06-14
-    Cliente: ACME Research LLC
-    Total: USD 1250.75
-    """
-    pdf_path = create_pdf(tmp_path / "invoice.pdf", invoice_text)
-
-    with pdf_path.open("rb") as pdf_file:
-        response = client.post(
-            "/extract-invoice",
-            files={"file": ("invoice.pdf", pdf_file, "application/pdf")},
+async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debes enviar un archivo PDF.",
         )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["filename"] == "invoice.pdf"
-    assert payload["cliente"] == "ACME Research LLC"
-    assert payload["importe"] == 1250.75
-    assert payload["moneda"] == "USD"
-    assert payload["fecha"] == "2026-06-14"
-    assert payload["numero_factura"] == "FAC-2026-001"
-    assert payload["confidence"] == 1.0
-    assert payload["missing_fields"] == []
-    assert payload["extraction_method"] == "text"
-    stored_path = UPLOAD_DIR / payload["stored_filename"]
-    stored_path.unlink(missing_ok=True)
-
-def test_cors_allows_localhost_dev_ports_for_agent_chat():
-    response = client.options(
-        "/agent/chat",
-        headers={
-            "Origin": "http://localhost:5174",
-            "Access-Control-Request-Method": "POST",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:5174"
-
-def test_upload_pdf_reports_extraction_method(tmp_path, monkeypatch):
-    pdf_path = create_pdf(tmp_path / "paper.pdf", "Selectable PDF text")
-
-    class FakeIndexingResult:
-        document_id = "doc-method"
-        chunks_indexed = 1
-        collection_name = "research_papers"
-
-    monkeypatch.setattr("app.main.index_pdf_text", lambda *args: FakeIndexingResult())
-
-    with pdf_path.open("rb") as pdf_file:
-        response = client.post(
-            "/upload-pdf",
-            files={"file": ("paper.pdf", pdf_file, "application/pdf")},
+    original_filename = Path(file.filename).name
+    if (
+        not original_filename.lower().endswith(".pdf")
+        or file.content_type != "application/pdf"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solo se permiten archivos PDF.",
         )
 
-    assert response.status_code == 201
-    payload = response.json()
-    assert payload["extraction_method"] == "text"
-    assert payload["ocr_attempted"] is False
-    assert payload["ocr_available"] is True
-    stored_path = UPLOAD_DIR / payload["stored_filename"]
-    stored_path.unlink(missing_ok=True)
+    safe_filename = f"{uuid4().hex}_{original_filename}"
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    destination = UPLOAD_DIR / safe_filename
+    bytes_written = 0
+
+    try:
+        with destination.open("wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_SIZE_BYTES:
+                    buffer.close()
+                    destination.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"El PDF no puede superar {MAX_UPLOAD_SIZE_MB} MB.",
+                    )
+                await run_in_threadpool(buffer.write, chunk)
+    finally:
+        await file.close()
+
+    return original_filename, safe_filename, destination, bytes_written
+
+
+def _empty_pdf_error(extraction_result) -> HTTPException:
+    if extraction_result.ocr_attempted and not extraction_result.ocr_available:
+        detail = (
+            "No se pudo extraer texto del PDF y el OCR local no esta disponible. "
+            "Instala Tesseract/idiomas OCR o usa un PDF con texto seleccionable."
+        )
+    else:
+        detail = (
+            "No se pudo extraer texto del PDF. "
+            "Prueba con un PDF que contenga texto seleccionable o escaneos legibles."
+        )
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
+    )
+
+
+@app.post("/upload-pdf", status_code=status.HTTP_201_CREATED)
+async def upload_pdf(file: UploadFile = File(...)):
+    original_filename, safe_filename, destination, bytes_written = (
+        await _save_pdf_upload(file)
+    )
+    extraction_result = await run_in_threadpool(
+        extract_text_from_pdf, destination, use_ocr_fallback=True
+    )
+
+    if extraction_result.character_count == 0:
+        destination.unlink(missing_ok=True)
+        raise _empty_pdf_error(extraction_result)
+
+    indexing_result = await run_in_threadpool(
+        index_pdf_text, extraction_result, original_filename, safe_filename
+    )
+
+    return {
+        "message": "PDF subido, texto extraído e indexado correctamente",
+        "filename": original_filename,
+        "stored_filename": safe_filename,
+        "size_bytes": bytes_written,
+        "page_count": extraction_result.page_count,
+        "character_count": extraction_result.character_count,
+        "extraction_method": extraction_result.extraction_method,
+        "ocr_attempted": extraction_result.ocr_attempted,
+        "ocr_available": extraction_result.ocr_available,
+        "text_preview": extraction_result.text[:500],
+        "document_id": indexing_result.document_id,
+        "chunks_indexed": indexing_result.chunks_indexed,
+        "collection_name": indexing_result.collection_name,
+    }
+
+
+@app.post("/extract-invoice", response_model=InvoiceExtractionResponse)
+async def extract_invoice(file: UploadFile = File(...)):
+    original_filename, safe_filename, destination, _bytes_written = (
+        await _save_pdf_upload(file)
+    )
+    extraction_result = await run_in_threadpool(
+        extract_text_from_pdf, destination, use_ocr_fallback=True
+    )
+
+    if extraction_result.character_count == 0:
+        destination.unlink(missing_ok=True)
+        raise _empty_pdf_error(extraction_result)
+
+    invoice = await run_in_threadpool(extract_invoice_fields, extraction_result.text)
+
+    return InvoiceExtractionResponse(
+        filename=original_filename,
+        stored_filename=safe_filename,
+        page_count=extraction_result.page_count,
+        character_count=extraction_result.character_count,
+        extraction_method=extraction_result.extraction_method,
+        ocr_attempted=extraction_result.ocr_attempted,
+        ocr_available=extraction_result.ocr_available,
+        cliente=invoice.cliente,
+        importe=invoice.importe,
+        moneda=invoice.moneda,
+        fecha=invoice.fecha,
+        numero_factura=invoice.numero_factura,
+        confidence=invoice.confidence,
+        missing_fields=invoice.missing_fields,
+        text_preview=extraction_result.text[:500],
+    )
+
+
+@app.get("/search")
+def search_pdf_chunks(
+    question: str = Query(..., min_length=1),
+    limit: int = Query(default=4, ge=1, le=10),
+):
+    results = search_similar_chunks(question=question, limit=limit)
+    return {
+        "question": question,
+        "results": [serialize_search_result(result) for result in results],
+    }
+
+
+@app.get("/chat/sessions")
+def list_chat_sessions():
+    return {"sessions": list_sessions()}
+
+
+@app.get("/chat/sessions/{session_id}")
+def get_chat_session(session_id: str):
+    return get_session(session_id)
+
+
+@app.post("/chat")
+async def chat_with_pdfs(request: ChatRequest):
+    started_at = time.perf_counter()
+    guardrail = inspect_text(request.question)
+    if not guardrail.allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
+    session_id = normalize_session_id(request.session_id)
+    history = await run_in_threadpool(get_recent_history, session_id)
+    retrieval_query = build_retrieval_query(request.question, history)
+    results = await run_in_threadpool(
+        search_similar_chunks, question=retrieval_query, limit=request.limit
+    )
+    rag_answer = await run_in_threadpool(
+        generate_rag_answer, request.question, results, history
+    )
+    sources = [serialize_search_result(result) for result in results]
+    answer_text = rag_answer.answer
+    sources_validated = answer_has_required_sources(answer_text, len(sources))
+    session = await run_in_threadpool(
+        append_chat_exchange,
+        session_id=session_id,
+        question=request.question,
+        answer=answer_text,
+        model=rag_answer.model,
+        used_llm=rag_answer.used_llm,
+        sources=sources,
+    )
+
+    log_event("chat", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__, sources_validated=sources_validated)
+
+    return {
+        "session_id": session_id,
+        "question": request.question,
+        "answer": answer_text,
+        "model": rag_answer.model,
+        "used_llm": rag_answer.used_llm,
+        "estimated_prompt_tokens": getattr(rag_answer, "estimated_prompt_tokens", None),
+        "included_contexts": getattr(rag_answer, "included_contexts", len(sources)),
+        "sources": sources,
+        "history": session["messages"],
+    }
+
+
+@app.post("/chat/stream")
+async def stream_chat_with_pdfs(request: ChatRequest):
+    started_at = time.perf_counter()
+    guardrail = inspect_text(request.question)
+    if not guardrail.allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
+    session_id = normalize_session_id(request.session_id)
+    history = await run_in_threadpool(get_recent_history, session_id)
+    retrieval_query = build_retrieval_query(request.question, history)
+    results = await run_in_threadpool(search_similar_chunks, question=retrieval_query, limit=request.limit)
+    rag_answer = await run_in_threadpool(generate_rag_answer, request.question, results, history)
+    sources = [serialize_search_result(result) for result in results]
+    await run_in_threadpool(append_chat_exchange, session_id=session_id, question=request.question, answer=rag_answer.answer, model=rag_answer.model, used_llm=rag_answer.used_llm, sources=sources)
+    log_event("chat_stream", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__)
+
+    async def event_stream():
+        yield f"event: metadata\ndata: {json.dumps({'session_id': session_id, 'model': rag_answer.model, 'sources': sources}, ensure_ascii=False)}\n\n"
+        for chunk in rag_answer.answer.split():
+            yield f"event: token\ndata: {json.dumps({'token': chunk + ' '}, ensure_ascii=False)}\n\n"
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/agent/chat")
+async def chat_with_research_agent(request: ChatRequest):
+    session_id = normalize_session_id(request.session_id)
+    history = await run_in_threadpool(get_recent_history, session_id)
+    agent_run = await run_in_threadpool(
+        run_research_agent,
+        question=request.question,
+        history=history,
+        limit=request.limit,
+    )
+    sources = [serialize_search_result(result) for result in agent_run.sources]
+    agent_steps = [serialize_agent_step(step) for step in agent_run.steps]
+    session = await run_in_threadpool(
+        append_chat_exchange,
+        session_id=session_id,
+        question=request.question,
+        answer=agent_run.answer,
+        model=agent_run.model,
+        used_llm=agent_run.used_llm,
+        sources=sources,
+        agent_steps=agent_steps,
+    )
+
+    return {
+        "session_id": session_id,
+        "question": request.question,
+        "answer": agent_run.answer,
+        "model": agent_run.model,
+        "used_llm": agent_run.used_llm,
+        "sources": sources,
+        "agent_steps": agent_steps,
+        "agent_framework": agent_run.framework,
+        "estimated_prompt_tokens": agent_run.estimated_prompt_tokens,
+        "included_contexts": agent_run.included_contexts,
+        "history": session["messages"],
+    }
