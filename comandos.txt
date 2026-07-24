@@ -1,0 +1,41 @@
+Crear entorno virtual
+python -m venv venv
+Activar entorno virtual
+
+Windows:
+
+venv\Scripts\activate
+
+Linux/Mac:
+
+source venv/bin/activate
+Instalar dependencias
+pip install fastapi uvicorn python-dotenv pymupdf chromadb sentence-transformers groq python-multipart
+
+Guardar dependencias:
+
+pip freeze > requirements.txt
+
+Verificar instalación:
+
+pip show chromadb
+pip list
+
+
+Ejecutar FastAPI
+
+Desde:
+
+backend/
+
+Ejecutar:
+
+uvicorn app.main:app --reload
+
+Resultado esperado:
+
+http://127.0.0.1:8000
+
+Swagger:
+
+http://localhost:8000/docs

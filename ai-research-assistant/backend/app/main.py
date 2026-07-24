@@ -1,0 +1,371 @@
+from contextlib import asynccontextmanager
+import json
+import time
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
+from app.agent import AgentStep, run_research_agent
+from app.chat_history import (
+    append_chat_exchange,
+    build_retrieval_query,
+    get_recent_history,
+    get_session,
+    list_sessions,
+    normalize_session_id,
+)
+from app.config import (
+    ALLOWED_ORIGINS,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_UPLOAD_SIZE_MB,
+    UPLOAD_DIR,
+)
+from app.invoice import extract_invoice_fields
+from app.guardrails import answer_has_required_sources, inspect_text
+from app.llm import generate_rag_answer
+from app.observability import collect_metrics, init_observability, log_event
+from app.pdf_loader import extract_text_from_pdf
+from app.rag import SearchResult, index_pdf_text, search_similar_chunks
+
+
+class InvoiceExtractionResponse(BaseModel):
+    filename: str
+    stored_filename: str
+    page_count: int
+    character_count: int
+    extraction_method: str
+    ocr_attempted: bool
+    ocr_available: bool
+    cliente: str
+    importe: float
+    moneda: str | None
+    fecha: str | None
+    numero_factura: str | None
+    confidence: float
+    missing_fields: list[str]
+    text_preview: str
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(..., min_length=1, description="Pregunta sobre los PDFs")
+    session_id: str | None = Field(
+        default=None,
+        description="Identificador de la conversación para historial y memoria",
+    )
+    limit: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        description="Cantidad máxima de fragmentos relevantes a recuperar",
+    )
+
+
+def serialize_search_result(result: SearchResult) -> dict[str, object]:
+    return {
+        "text": result.text,
+        "filename": result.filename,
+        "page_number": result.page_number,
+        "document_id": result.document_id,
+        "distance": result.distance,
+    }
+
+
+def serialize_agent_step(step: AgentStep) -> dict[str, object]:
+    return {
+        "name": step.name,
+        "description": step.description,
+        "tool": step.tool,
+        "decision": step.decision,
+        "role": getattr(step, "role", None),
+    }
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    init_observability()
+    yield
+
+
+app = FastAPI(
+    title="AI Research Assistant",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+def root():
+    return {"message": "AI Research Assistant API funcionando"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "ai-research-assistant"}
+
+
+@app.get("/metrics")
+def metrics():
+    return collect_metrics()
+
+
+async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debes enviar un archivo PDF.",
+        )
+
+    original_filename = Path(file.filename).name
+    if (
+        not original_filename.lower().endswith(".pdf")
+        or file.content_type != "application/pdf"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Solo se permiten archivos PDF.",
+        )
+
+    safe_filename = f"{uuid4().hex}_{original_filename}"
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    destination = UPLOAD_DIR / safe_filename
+    bytes_written = 0
+
+    try:
+        with destination.open("wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_SIZE_BYTES:
+                    buffer.close()
+                    destination.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"El PDF no puede superar {MAX_UPLOAD_SIZE_MB} MB.",
+                    )
+                await run_in_threadpool(buffer.write, chunk)
+    finally:
+        await file.close()
+
+    return original_filename, safe_filename, destination, bytes_written
+
+
+def _empty_pdf_error(extraction_result) -> HTTPException:
+    if extraction_result.ocr_attempted and not extraction_result.ocr_available:
+        detail = (
+            "No se pudo extraer texto del PDF y el OCR local no esta disponible. "
+            "Instala Tesseract/idiomas OCR o usa un PDF con texto seleccionable."
+        )
+    else:
+        detail = (
+            "No se pudo extraer texto del PDF. "
+            "Prueba con un PDF que contenga texto seleccionable o escaneos legibles."
+        )
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
+    )
+
+
+@app.post("/upload-pdf", status_code=status.HTTP_201_CREATED)
+async def upload_pdf(file: UploadFile = File(...)):
+    original_filename, safe_filename, destination, bytes_written = (
+        await _save_pdf_upload(file)
+    )
+    extraction_result = await run_in_threadpool(
+        extract_text_from_pdf, destination, use_ocr_fallback=True
+    )
+
+    if extraction_result.character_count == 0:
+        destination.unlink(missing_ok=True)
+        raise _empty_pdf_error(extraction_result)
+
+    indexing_result = await run_in_threadpool(
+        index_pdf_text, extraction_result, original_filename, safe_filename
+    )
+
+    return {
+        "message": "PDF subido, texto extraído e indexado correctamente",
+        "filename": original_filename,
+        "stored_filename": safe_filename,
+        "size_bytes": bytes_written,
+        "page_count": extraction_result.page_count,
+        "character_count": extraction_result.character_count,
+        "extraction_method": extraction_result.extraction_method,
+        "ocr_attempted": extraction_result.ocr_attempted,
+        "ocr_available": extraction_result.ocr_available,
+        "text_preview": extraction_result.text[:500],
+        "document_id": indexing_result.document_id,
+        "chunks_indexed": indexing_result.chunks_indexed,
+        "collection_name": indexing_result.collection_name,
+    }
+
+
+@app.post("/extract-invoice", response_model=InvoiceExtractionResponse)
+async def extract_invoice(file: UploadFile = File(...)):
+    original_filename, safe_filename, destination, _bytes_written = (
+        await _save_pdf_upload(file)
+    )
+    extraction_result = await run_in_threadpool(
+        extract_text_from_pdf, destination, use_ocr_fallback=True
+    )
+
+    if extraction_result.character_count == 0:
+        destination.unlink(missing_ok=True)
+        raise _empty_pdf_error(extraction_result)
+
+    invoice = await run_in_threadpool(extract_invoice_fields, extraction_result.text)
+
+    return InvoiceExtractionResponse(
+        filename=original_filename,
+        stored_filename=safe_filename,
+        page_count=extraction_result.page_count,
+        character_count=extraction_result.character_count,
+        extraction_method=extraction_result.extraction_method,
+        ocr_attempted=extraction_result.ocr_attempted,
+        ocr_available=extraction_result.ocr_available,
+        cliente=invoice.cliente,
+        importe=invoice.importe,
+        moneda=invoice.moneda,
+        fecha=invoice.fecha,
+        numero_factura=invoice.numero_factura,
+        confidence=invoice.confidence,
+        missing_fields=invoice.missing_fields,
+        text_preview=extraction_result.text[:500],
+    )
+
+
+@app.get("/search")
+def search_pdf_chunks(
+    question: str = Query(..., min_length=1),
+    limit: int = Query(default=4, ge=1, le=10),
+):
+    results = search_similar_chunks(question=question, limit=limit)
+    return {
+        "question": question,
+        "results": [serialize_search_result(result) for result in results],
+    }
+
+
+@app.get("/chat/sessions")
+def list_chat_sessions():
+    return {"sessions": list_sessions()}
+
+
+@app.get("/chat/sessions/{session_id}")
+def get_chat_session(session_id: str):
+    return get_session(session_id)
+
+
+@app.post("/chat")
+async def chat_with_pdfs(request: ChatRequest):
+    started_at = time.perf_counter()
+    guardrail = inspect_text(request.question)
+    if not guardrail.allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
+    session_id = normalize_session_id(request.session_id)
+    history = await run_in_threadpool(get_recent_history, session_id)
+    retrieval_query = build_retrieval_query(request.question, history)
+    results = await run_in_threadpool(
+        search_similar_chunks, question=retrieval_query, limit=request.limit
+    )
+    rag_answer = await run_in_threadpool(
+        generate_rag_answer, request.question, results, history
+    )
+    sources = [serialize_search_result(result) for result in results]
+    answer_text = rag_answer.answer
+    sources_validated = answer_has_required_sources(answer_text, len(sources))
+    session = await run_in_threadpool(
+        append_chat_exchange,
+        session_id=session_id,
+        question=request.question,
+        answer=answer_text,
+        model=rag_answer.model,
+        used_llm=rag_answer.used_llm,
+        sources=sources,
+    )
+
+    log_event("chat", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__, sources_validated=sources_validated)
+
+    return {
+        "session_id": session_id,
+        "question": request.question,
+        "answer": answer_text,
+        "model": rag_answer.model,
+        "used_llm": rag_answer.used_llm,
+        "estimated_prompt_tokens": getattr(rag_answer, "estimated_prompt_tokens", None),
+        "included_contexts": getattr(rag_answer, "included_contexts", len(sources)),
+        "sources": sources,
+        "history": session["messages"],
+    }
+
+
+@app.post("/chat/stream")
+async def stream_chat_with_pdfs(request: ChatRequest):
+    started_at = time.perf_counter()
+    guardrail = inspect_text(request.question)
+    if not guardrail.allowed:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
+    session_id = normalize_session_id(request.session_id)
+    history = await run_in_threadpool(get_recent_history, session_id)
+    retrieval_query = build_retrieval_query(request.question, history)
+    results = await run_in_threadpool(search_similar_chunks, question=retrieval_query, limit=request.limit)
+    rag_answer = await run_in_threadpool(generate_rag_answer, request.question, results, history)
+    sources = [serialize_search_result(result) for result in results]
+    await run_in_threadpool(append_chat_exchange, session_id=session_id, question=request.question, answer=rag_answer.answer, model=rag_answer.model, used_llm=rag_answer.used_llm, sources=sources)
+    log_event("chat_stream", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__)
+
+    async def event_stream():
+        yield f"event: metadata\ndata: {json.dumps({'session_id': session_id, 'model': rag_answer.model, 'sources': sources}, ensure_ascii=False)}\n\n"
+        for chunk in rag_answer.answer.split():
+            yield f"event: token\ndata: {json.dumps({'token': chunk + ' '}, ensure_ascii=False)}\n\n"
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/agent/chat")
+async def chat_with_research_agent(request: ChatRequest):
+    session_id = normalize_session_id(request.session_id)
+    history = await run_in_threadpool(get_recent_history, session_id)
+    agent_run = await run_in_threadpool(
+        run_research_agent,
+        question=request.question,
+        history=history,
+        limit=request.limit,
+    )
+    sources = [serialize_search_result(result) for result in agent_run.sources]
+    agent_steps = [serialize_agent_step(step) for step in agent_run.steps]
+    session = await run_in_threadpool(
+        append_chat_exchange,
+        session_id=session_id,
+        question=request.question,
+        answer=agent_run.answer,
+        model=agent_run.model,
+        used_llm=agent_run.used_llm,
+        sources=sources,
+        agent_steps=agent_steps,
+    )
+
+    return {
+        "session_id": session_id,
+        "question": request.question,
+        "answer": agent_run.answer,
+        "model": agent_run.model,
+        "used_llm": agent_run.used_llm,
+        "sources": sources,
+        "agent_steps": agent_steps,
+        "agent_framework": agent_run.framework,
+        "estimated_prompt_tokens": agent_run.estimated_prompt_tokens,
+        "included_contexts": agent_run.included_contexts,
+        "history": session["messages"],
+    }
