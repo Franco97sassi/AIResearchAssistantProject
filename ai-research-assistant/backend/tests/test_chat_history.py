@@ -37,3 +37,19 @@ def test_build_retrieval_query_includes_recent_memory():
     assert "What is vector search?" in query
     assert "semantically similar chunks" in query
     assert "What does that imply?" in query
+
+
+def test_delete_tenant_sessions_keeps_other_tenants(tmp_path, monkeypatch):
+    monkeypatch.setattr(chat_history, "CHAT_HISTORY_PATH", tmp_path / "history.json")
+    for tenant in ("tenant-a", "tenant-b"):
+        chat_history.append_chat_exchange(
+            session_id=f"{tenant}:session-1",
+            question="Question",
+            answer="Answer",
+            model="local",
+            used_llm=False,
+            sources=[],
+        )
+
+    assert chat_history.delete_tenant_sessions("tenant-a") == 1
+    assert [item["session_id"] for item in chat_history.list_sessions()] == ["tenant-b:session-1"]

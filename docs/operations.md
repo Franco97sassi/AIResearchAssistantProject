@@ -27,7 +27,9 @@ RPO 24 horas y RTO 2 horas. La restauración es destructiva y exige detener escr
 ## Observabilidad, coste y carga
 
 `docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d` levanta
-Prometheus y Grafana. El dashboard muestra disponibilidad, latencia y coste estimado; las alertas
+Prometheus, Grafana y un OpenTelemetry Collector. El backend exporta spans FastAPI por OTLP y el
+collector incluido los escribe con su exporter `debug`, que debe sustituirse por Tempo, Jaeger o
+el backend administrado elegido. El dashboard muestra disponibilidad, latencia y coste estimado; las alertas
 incluyen caída, latencia media superior a 2 s y gasto diario superior a USD 10. Configure precios
 mediante `LLM_INPUT_COST_PER_MILLION` y `LLM_OUTPUT_COST_PER_MILLION`; son estimaciones, no
 facturas. En producción proteja métricas en una red privada y conecte Alertmanager al canal de
@@ -37,12 +39,27 @@ Ejecute carga en un entorno aislado: `k6 run -e BASE_URL=https://staging.example
 El umbral falla con más de 1 % de errores o p95 superior a 1.5 s. No use datos reales ni ejecute
 contra producción sin una ventana aprobada.
 
+Guarde cada resumen revisado bajo `load/results/` con fecha, entorno y SHA siguiendo las
+instrucciones de esa carpeta. Los resultados no deben contener cabeceras de autenticación.
+
 ## Procesamiento asíncrono
 
 `POST /jobs/upload-pdf` guarda el archivo y devuelve HTTP 202 con `job_id`. Un worker RQ consume
 la cola Redis `pdf-indexing`; `GET /jobs/{job_id}` informa `queued`, `started`, `finished` o
 `failed`. El endpoint síncrono original se conserva para compatibilidad. Redis usa AOF y los
 archivos y Chroma comparten volúmenes entre API y worker.
+
+Los clientes deben proporcionar un `Idempotency-Key` estable por upload lógico. RQ reintenta tres
+veces por defecto y la indexación usa identificadores deterministas/upsert, por lo que un worker
+puede repetir el trabajo sin duplicar chunks.
+
+## Borrado por tenant
+
+`DELETE /tenants/me/data` elimina trabajos pendientes, chunks, uploads e historial del tenant
+autenticado. Si existe un trabajo activo responde 409: espere a que termine y repita el borrado.
+Registre la solicitud sin copiar documentos ni claves al ticket y compruebe después que búsquedas
+y sesiones quedan vacías. Las copias de seguridad conservan datos hasta vencer su retención; una
+política de producción debe registrar y aplicar también las solicitudes de borrado sobre backups.
 
 ## Runbook mínimo
 

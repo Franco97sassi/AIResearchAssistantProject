@@ -6,6 +6,7 @@ from app.pdf_loader import PDFPage, PDFTextExtractionResult
 from app.rag import (
     HashingEmbeddingFunction,
     chunk_pdf_text,
+    delete_tenant_documents,
     index_pdf_text,
     list_indexed_documents,
     search_similar_chunks,
@@ -100,3 +101,35 @@ def test_list_indexed_documents_groups_chunks_by_pdf(tmp_path):
             "chunk_count": result.chunks_indexed,
         }
     ]
+
+
+def test_idempotent_document_id_upserts_instead_of_duplicating(tmp_path):
+    collection = create_collection(tmp_path)
+    extraction = PDFTextExtractionResult(
+        pages=[PDFPage(page_number=1, text="A stable document for retry testing.")]
+    )
+
+    for _ in range(2):
+        index_pdf_text(
+            extraction,
+            "retry.pdf",
+            "stored.pdf",
+            collection=collection,
+            owner_id="tenant-a",
+            document_id="stable-id",
+        )
+
+    assert collection.count() == 1
+
+
+def test_delete_tenant_documents_does_not_delete_other_tenants(tmp_path):
+    collection = create_collection(tmp_path)
+    extraction = PDFTextExtractionResult(pages=[PDFPage(page_number=1, text="Tenant data")])
+    index_pdf_text(extraction, "a.pdf", "a-safe.pdf", collection=collection, owner_id="tenant-a")
+    index_pdf_text(extraction, "b.pdf", "b-safe.pdf", collection=collection, owner_id="tenant-b")
+
+    result = delete_tenant_documents("tenant-a", collection=collection)
+
+    assert result == {"chunks_deleted": 1, "stored_filenames": ["a-safe.pdf"]}
+    remaining = collection.get(include=["metadatas"])["metadatas"]
+    assert [metadata["owner_id"] for metadata in remaining] == ["tenant-b"]

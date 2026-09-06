@@ -39,3 +39,11 @@ def test_job_owner_isolated_by_tenant():
     job = SimpleNamespace(meta={"owner_id": "tenant-a"})
     assert jobs.job_belongs_to(job, "tenant-a") is True
     assert jobs.job_belongs_to(job, "tenant-b") is False
+
+
+def test_idempotency_ids_are_stable_and_tenant_scoped():
+    first = jobs.build_idempotent_ids("tenant-a", "key-1")
+
+    assert first == jobs.build_idempotent_ids("tenant-a", "key-1")
+    assert first != jobs.build_idempotent_ids("tenant-b", "key-1")
+    assert first[0] == f"pdf-{first[1]}"

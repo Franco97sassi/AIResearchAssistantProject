@@ -97,6 +97,19 @@ def list_sessions() -> list[dict[str, object]]:
         return sorted(sessions, key=lambda item: str(item["updated_at"]), reverse=True)
 
 
+def delete_tenant_sessions(tenant_id: str) -> int:
+    """Delete sessions whose server-side key is scoped to ``tenant_id``."""
+    prefix = f"{tenant_id}:"
+    with _lock:
+        store = _load_store()
+        session_ids = [key for key in store["sessions"] if key.startswith(prefix)]
+        for session_id in session_ids:
+            del store["sessions"][session_id]
+        if session_ids:
+            _save_store(store)
+        return len(session_ids)
+
+
 def get_recent_history(session_id: str, limit: int = MAX_MEMORY_EXCHANGES) -> list[dict]:
     session = get_session(session_id)
     messages = session.get("messages", [])

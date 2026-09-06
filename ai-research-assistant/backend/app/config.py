@@ -68,6 +68,11 @@ API_KEY_TENANTS: dict[str, str] = json.loads(os.getenv("API_KEY_TENANTS", "{}"))
 TRACE_RETENTION_DAYS = int(os.getenv("TRACE_RETENTION_DAYS", "30"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "900"))
+JOB_MAX_RETRIES = int(os.getenv("JOB_MAX_RETRIES", "3"))
+JOB_RETRY_INTERVAL_SECONDS = int(os.getenv("JOB_RETRY_INTERVAL_SECONDS", "30"))
+OTEL_ENABLED = os.getenv("OTEL_ENABLED", "false").strip().lower() == "true"
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "ai-research-assistant-backend")
+OTEL_EXPORTER_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
 # USD per million tokens. Keeping prices in configuration makes cost estimates auditable.
 LLM_INPUT_COST_PER_MILLION = float(os.getenv("LLM_INPUT_COST_PER_MILLION", "0"))
 LLM_OUTPUT_COST_PER_MILLION = float(os.getenv("LLM_OUTPUT_COST_PER_MILLION", "0"))
