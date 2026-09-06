@@ -142,20 +142,14 @@ class LangChainRetrieverAdapter:
         self.limit = limit
 
     def invoke(self, query: str | dict[str, Any]) -> list[Any]:
-        normalized_query = (
-            str(query.get("query", "")) if isinstance(query, dict) else str(query)
-        )
-        return search_results_to_langchain_documents(
-            self.search_tool(normalized_query, self.limit)
-        )
+        normalized_query = str(query.get("query", "")) if isinstance(query, dict) else str(query)
+        return search_results_to_langchain_documents(self.search_tool(normalized_query, self.limit))
 
     def get_relevant_documents(self, query: str) -> list[Any]:
         return self.invoke(query)
 
 
-def build_langchain_retriever(
-    search_tool: Any, *, limit: int = 4
-) -> LangChainRetrieverAdapter:
+def build_langchain_retriever(search_tool: Any, *, limit: int = 4) -> LangChainRetrieverAdapter:
     """Expose the existing vector search as a LangChain-style retriever."""
     return LangChainRetrieverAdapter(search_tool, limit=limit)
 
@@ -200,9 +194,7 @@ def page_from_langchain_document(document: Any, fallback_page_number: int) -> PD
         content = str(getattr(document, "page_content", ""))
         metadata = getattr(document, "metadata", {}) or {}
     return PDFPage(
-        page_number=int(
-            metadata.get("page_number", metadata.get("page", fallback_page_number))
-        ),
+        page_number=int(metadata.get("page_number", metadata.get("page", fallback_page_number))),
         text=content,
         extraction_method=str(metadata.get("extraction_method", "langchain")),
     )

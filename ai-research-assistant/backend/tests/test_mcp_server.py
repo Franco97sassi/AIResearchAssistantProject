@@ -1,5 +1,5 @@
-from app.rag import SearchResult
 import app.mcp_server as mcp_server
+from app.rag import SearchResult
 
 
 def test_search_pdf_knowledge_base_tool_serializes_sources(monkeypatch):

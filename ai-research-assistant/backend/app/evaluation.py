@@ -23,11 +23,7 @@ class RAGEvaluation:
 
 
 def _terms(text: str) -> set[str]:
-    return {
-        term
-        for term in re.findall(r"[a-záéíóúñü0-9]+", text.lower())
-        if len(term) > 3
-    }
+    return {term for term in re.findall(r"[a-záéíóúñü0-9]+", text.lower()) if len(term) > 3}
 
 
 def evaluate_rag_response(
@@ -63,7 +59,9 @@ def evaluate_rag_response(
     if sources and not cited:
         notes.append("La respuesta no menciona fuente o pagina explicitamente.")
     if unsupported_terms:
-        notes.append("Hay terminos de la respuesta que no aparecen en la pregunta ni en las fuentes.")
+        notes.append(
+            "Hay terminos de la respuesta que no aparecen en la pregunta ni en las fuentes."
+        )
     if guardrail.violations:
         notes.append("La respuesta contiene señales de seguridad que deben revisarse.")
 
@@ -74,7 +72,9 @@ def evaluate_rag_response(
         hallucination_risk=risk,
         grounded=bool(sources) and cited and risk == "low",
         source_coverage=round(source_coverage, 3),
-        pii_detected=bool(guardrail.pii["emails"] or guardrail.pii["phones"] or guardrail.pii["cards"]),
+        pii_detected=bool(
+            guardrail.pii["emails"] or guardrail.pii["phones"] or guardrail.pii["cards"]
+        ),
         prompt_injection_detected=guardrail.prompt_injection,
         estimated_answer_tokens=estimate_tokens(answer),
         notes=notes,

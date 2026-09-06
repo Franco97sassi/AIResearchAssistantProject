@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,10 +26,10 @@ CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "research_papers")
 HISTORY_DIR = Path(os.getenv("HISTORY_DIR", BASE_DIR / "history"))
 CHAT_HISTORY_PATH = Path(os.getenv("CHAT_HISTORY_PATH", BASE_DIR / "chat_history.json"))
 ALLOWED_ORIGINS = [
-    origin.strip().rstrip("/") 
-        for origin in os.getenv(
-        "ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
-    ).split(",")
+    origin.strip().rstrip("/")
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(
+        ","
+    )
     if origin.strip()
 ]
 ALLOWED_ORIGIN_REGEX = os.getenv(

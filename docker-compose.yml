@@ -1,8 +1,8 @@
 services:
   backend:
-    build: ./backend
+    build: ./ai-research-assistant/backend
     env_file:
-      - ./backend/.env.example
+      - ./ai-research-assistant/backend/.env.example
     environment:
       CHROMA_DIR: /app/chroma_db
       HISTORY_DIR: /app/history
@@ -17,7 +17,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./ai-research-assistant/frontend
       args:
         VITE_API_BASE_URL: http://localhost:8000
     ports:

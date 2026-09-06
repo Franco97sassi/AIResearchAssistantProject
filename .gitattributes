@@ -1,0 +1,8 @@
+# The original requirements file was UTF-16. Force a textual diff while the
+# normalized UTF-8 version is reviewed in this branch.
+ai-research-assistant/backend/requirements.txt text eol=lf diff
+
+# Explicitly classify repository assets and generated databases as binary.
+*.pdf binary
+*.png binary
+*.sqlite3 binary

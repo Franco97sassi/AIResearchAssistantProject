@@ -1,14 +1,15 @@
-from contextlib import asynccontextmanager
 import json
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
 from app.agent import AgentStep, run_research_agent
 from app.chat_history import (
     append_chat_exchange,
@@ -20,15 +21,15 @@ from app.chat_history import (
     normalize_session_id,
 )
 from app.config import (
-    ALLOWED_ORIGINS,
     ALLOWED_ORIGIN_REGEX,
+    ALLOWED_ORIGINS,
     MAX_UPLOAD_SIZE_BYTES,
     MAX_UPLOAD_SIZE_MB,
     UPLOAD_DIR,
 )
-from app.invoice import extract_invoice_fields
-from app.guardrails import answer_has_required_sources, inspect_text
 from app.evaluation import evaluate_rag_response
+from app.guardrails import answer_has_required_sources, inspect_text
+from app.invoice import extract_invoice_fields
 from app.llm import generate_rag_answer
 from app.observability import collect_metrics, init_observability, log_event
 from app.pdf_loader import extract_text_from_pdf
@@ -83,6 +84,21 @@ class ChatRequest(BaseModel):
         default=None,
         description="Opcional: limita la recuperación a un PDF indexado concreto",
     )
+
+
+def validate_question(question: str) -> dict[str, object]:
+    """Reject prompt-injection attempts before any retrieval or model call."""
+    guardrail = inspect_text(question)
+    if not guardrail.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "La pregunta parece contener prompt injection.",
+                "guardrails": guardrail.__dict__,
+            },
+        )
+    return guardrail.__dict__
+
 
 def serialize_search_result(result: SearchResult) -> dict[str, object]:
     return {
@@ -205,10 +221,7 @@ async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:
         )
 
     original_filename = Path(file.filename).name
-    if (
-        not original_filename.lower().endswith(".pdf")
-        or file.content_type != "application/pdf"
-    ):
+    if not original_filename.lower().endswith(".pdf") or file.content_type != "application/pdf":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Solo se permiten archivos PDF.",
@@ -227,7 +240,7 @@ async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:
                     buffer.close()
                     destination.unlink(missing_ok=True)
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                         detail=f"El PDF no puede superar {MAX_UPLOAD_SIZE_MB} MB.",
                     )
                 await run_in_threadpool(buffer.write, chunk)
@@ -248,16 +261,12 @@ def _empty_pdf_error(extraction_result) -> HTTPException:
             "No se pudo extraer texto del PDF. "
             "Prueba con un PDF que contenga texto seleccionable o escaneos legibles."
         )
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail
-    )
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
 
 @app.post("/upload-pdf", status_code=status.HTTP_201_CREATED)
 async def upload_pdf(file: UploadFile = File(...)):
-    original_filename, safe_filename, destination, bytes_written = (
-        await _save_pdf_upload(file)
-    )
+    original_filename, safe_filename, destination, bytes_written = await _save_pdf_upload(file)
     extraction_result = await run_in_threadpool(
         extract_text_from_pdf, destination, use_ocr_fallback=True
     )
@@ -287,13 +296,9 @@ async def upload_pdf(file: UploadFile = File(...)):
     }
 
 
- 
-
 @app.post("/extract-invoice", response_model=InvoiceExtractionResponse)
 async def extract_invoice(file: UploadFile = File(...)):
-    original_filename, safe_filename, destination, _bytes_written = (
-        await _save_pdf_upload(file)
-    )
+    original_filename, safe_filename, destination, _bytes_written = await _save_pdf_upload(file)
     extraction_result = await run_in_threadpool(
         extract_text_from_pdf, destination, use_ocr_fallback=True
     )
@@ -329,9 +334,7 @@ def search_pdf_chunks(
     limit: int = Query(default=4, ge=1, le=10),
     document_id: str | None = Query(default=None),
 ):
-    results = search_similar_chunks(
-        question=question, limit=limit, document_id=document_id
-    )
+    results = search_similar_chunks(question=question, limit=limit, document_id=document_id)
     return {
         "question": question,
         "results": [serialize_search_result(result) for result in results],
@@ -351,14 +354,12 @@ def get_chat_session(session_id: str):
 @app.post("/chat")
 async def chat_with_pdfs(request: ChatRequest):
     started_at = time.perf_counter()
-    guardrail = inspect_text(request.question)
-    if not guardrail.allowed:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
+    guardrail = validate_question(request.question)
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
     scoped_history = filter_history_for_document(history, request.document_id)
     retrieval_query = build_retrieval_query(request.question, scoped_history)
-    results = await run_in_threadpool(       
+    results = await run_in_threadpool(
         search_similar_chunks,
         question=retrieval_query,
         limit=request.limit,
@@ -380,7 +381,15 @@ async def chat_with_pdfs(request: ChatRequest):
         sources=sources,
     )
 
-    log_event("chat", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__, sources_validated=sources_validated)
+    log_event(
+        "chat",
+        latency_ms=(time.perf_counter() - started_at) * 1000,
+        model=rag_answer.model,
+        source_count=len(sources),
+        estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0),
+        guardrails=guardrail,
+        sources_validated=sources_validated,
+    )
 
     return {
         "session_id": session_id,
@@ -398,9 +407,7 @@ async def chat_with_pdfs(request: ChatRequest):
 @app.post("/chat/stream")
 async def stream_chat_with_pdfs(request: ChatRequest):
     started_at = time.perf_counter()
-    guardrail = inspect_text(request.question)
-    if not guardrail.allowed:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"message": "La pregunta parece contener prompt injection.", "guardrails": guardrail.__dict__})
+    guardrail = validate_question(request.question)
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
     scoped_history = filter_history_for_document(history, request.document_id)
@@ -410,13 +417,28 @@ async def stream_chat_with_pdfs(request: ChatRequest):
         question=retrieval_query,
         limit=request.limit,
         document_id=request.document_id,
-    ) 
+    )
     rag_answer = await run_in_threadpool(
         generate_rag_answer, request.question, results, scoped_history
     )
     sources = [serialize_search_result(result) for result in results]
-    await run_in_threadpool(append_chat_exchange, session_id=session_id, question=request.question, answer=rag_answer.answer, model=rag_answer.model, used_llm=rag_answer.used_llm, sources=sources)
-    log_event("chat_stream", latency_ms=(time.perf_counter() - started_at) * 1000, model=rag_answer.model, source_count=len(sources), estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0), guardrails=guardrail.__dict__)
+    await run_in_threadpool(
+        append_chat_exchange,
+        session_id=session_id,
+        question=request.question,
+        answer=rag_answer.answer,
+        model=rag_answer.model,
+        used_llm=rag_answer.used_llm,
+        sources=sources,
+    )
+    log_event(
+        "chat_stream",
+        latency_ms=(time.perf_counter() - started_at) * 1000,
+        model=rag_answer.model,
+        source_count=len(sources),
+        estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0),
+        guardrails=guardrail,
+    )
 
     async def event_stream():
         yield f"event: metadata\ndata: {json.dumps({'session_id': session_id, 'model': rag_answer.model, 'sources': sources}, ensure_ascii=False)}\n\n"
@@ -429,6 +451,7 @@ async def stream_chat_with_pdfs(request: ChatRequest):
 
 @app.post("/agent/chat")
 async def chat_with_research_agent(request: ChatRequest):
+    validate_question(request.question)
     session_id = normalize_session_id(request.session_id)
     history = await run_in_threadpool(get_recent_history, session_id)
     scoped_history = filter_history_for_document(history, request.document_id)

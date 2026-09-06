@@ -122,4 +122,3 @@ def test_research_agent_falls_back_when_groq_fails(monkeypatch):
     assert agent_run.model == "local-context-fallback"
     assert "No se pudo contactar el modelo" in agent_run.answer
     assert agent_run.sources == fake_results
- 

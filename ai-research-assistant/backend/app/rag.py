@@ -6,24 +6,27 @@ from chromadb.api.models.Collection import Collection
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from app.langchain_rag import build_langchain_documents, split_text_with_langchain
-from app.pdf_loader import PDFTextExtractionResult
+
 from app.config import (
     CHROMA_COLLECTION_NAME,
     CHROMA_DIR,
     EMBEDDING_PROVIDER,
     HASHING_EMBEDDING_FEATURES,
-    SENTENCE_TRANSFORMER_MODEL,
-    RETRIEVAL_MODE,
-    RERANKING_ENABLED,
     RERANKER_MODEL,
+    RERANKING_ENABLED,
+    RETRIEVAL_MODE,
+    SENTENCE_TRANSFORMER_MODEL,
 )
+from app.langchain_rag import build_langchain_documents, split_text_with_langchain
+from app.pdf_loader import PDFTextExtractionResult
+
 
 @dataclass(frozen=True)
 class TextChunk:
     text: str
     page_number: int
     chunk_index: int
+
 
 @dataclass(frozen=True)
 class IndexingResult:
@@ -32,12 +35,14 @@ class IndexingResult:
     chunks_indexed: int
     collection_name: str
 
+
 @dataclass(frozen=True)
 class IndexedDocument:
     document_id: str
     filename: str
     stored_filename: str
     chunk_count: int
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -112,9 +117,7 @@ def build_embedding_function() -> EmbeddingFunction[Documents]:
     if EMBEDDING_PROVIDER == "hashing":
         return HashingEmbeddingFunction(n_features=HASHING_EMBEDDING_FEATURES)
     if EMBEDDING_PROVIDER in {"sentence-transformers", "sentence_transformers"}:
-        return SentenceTransformerEmbeddingFunction(
-            model_name=SENTENCE_TRANSFORMER_MODEL
-        )
+        return SentenceTransformerEmbeddingFunction(model_name=SENTENCE_TRANSFORMER_MODEL)
 
     raise ValueError("EMBEDDING_PROVIDER debe ser 'hashing' o 'sentence-transformers'")
 
@@ -134,9 +137,7 @@ def chunk_pdf_text(
         raise ValueError("chunk_overlap debe ser menor que chunk_size")
 
     chunks: list[TextChunk] = []
-    langchain_documents = build_langchain_documents(
-        extraction_result, filename="extracted-pdf"
-    )
+    langchain_documents = build_langchain_documents(extraction_result, filename="extracted-pdf")
     for document_index, document in enumerate(langchain_documents):
         raw_text = (
             document.get("page_content", "")
@@ -146,14 +147,8 @@ def chunk_pdf_text(
         page_text = " ".join(str(raw_text).split())
         if not page_text:
             continue
-        metadata = (
-            document.get("metadata", {})
-            if isinstance(document, dict)
-            else document.metadata
-        )
-        page_number = int(
-            metadata.get("page_number", metadata.get("page", document_index + 1))
-        )
+        metadata = document.get("metadata", {}) if isinstance(document, dict) else document.metadata
+        page_number = int(metadata.get("page_number", metadata.get("page", document_index + 1)))
         langchain_chunks = split_text_with_langchain(
             page_text, chunk_size=chunk_size, chunk_overlap=chunk_overlap
         )
@@ -222,10 +217,7 @@ def index_pdf_text(
 
     if chunks:
         target_collection.add(
-            ids=[
-                f"{document_id}:{chunk.page_number}:{chunk.chunk_index}"
-                for chunk in chunks
-            ],
+            ids=[f"{document_id}:{chunk.page_number}:{chunk.chunk_index}" for chunk in chunks],
             documents=[chunk.text for chunk in chunks],
             metadatas=[
                 {
@@ -245,6 +237,7 @@ def index_pdf_text(
         chunks_indexed=len(chunks),
         collection_name=target_collection.name,
     )
+
 
 def _result_key(result: SearchResult) -> tuple[str, int, str]:
     return (result.document_id, result.page_number, result.text[:80])
@@ -282,6 +275,7 @@ def _dense_search(
         for document, metadata, distance in zip(documents, metadatas, distances, strict=False)
     ]
 
+
 def _bm25_search(
     question: str,
     limit: int,
@@ -304,7 +298,15 @@ def _bm25_search(
     output: list[SearchResult] = []
     for index in ranked:
         metadata = metadatas[index] or {}
-        output.append(SearchResult(text=documents[index], filename=str(metadata.get("filename", "")), page_number=int(metadata.get("page_number", 0)), document_id=str(metadata.get("document_id", "")), distance=float(1 - scores[index])))
+        output.append(
+            SearchResult(
+                text=documents[index],
+                filename=str(metadata.get("filename", "")),
+                page_number=int(metadata.get("page_number", 0)),
+                document_id=str(metadata.get("document_id", "")),
+                distance=float(1 - scores[index]),
+            )
+        )
     return output
 
 
@@ -313,9 +315,15 @@ def _rerank(question: str, results: list[SearchResult], limit: int) -> list[Sear
         return results[:limit]
     try:
         from sentence_transformers import CrossEncoder
+
         model = CrossEncoder(RERANKER_MODEL)
         scores = model.predict([(question, result.text) for result in results])
-        return [result for _, result in sorted(zip(scores, results, strict=False), key=lambda item: item[0], reverse=True)][:limit]
+        return [
+            result
+            for _, result in sorted(
+                zip(scores, results, strict=False), key=lambda item: item[0], reverse=True
+            )
+        ][:limit]
     except Exception:
         return results[:limit]
 
@@ -333,13 +341,24 @@ def search_similar_chunks(
     target_collection = collection or get_collection()
     mode = RETRIEVAL_MODE if RETRIEVAL_MODE in {"dense", "bm25", "hybrid"} else "dense"
     if mode == "bm25":
-        return _rerank(normalized_question, _bm25_search(normalized_question, limit * 3, target_collection, document_id), limit)
+        return _rerank(
+            normalized_question,
+            _bm25_search(normalized_question, limit * 3, target_collection, document_id),
+            limit,
+        )
     if mode == "hybrid":
         merged: dict[tuple[str, int, str], SearchResult] = {}
-        for result in _dense_search(normalized_question, limit * 3, target_collection, document_id) + _bm25_search(normalized_question, limit * 3, target_collection, document_id):
+        for result in _dense_search(
+            normalized_question, limit * 3, target_collection, document_id
+        ) + _bm25_search(normalized_question, limit * 3, target_collection, document_id):
             merged.setdefault(_result_key(result), result)
         return _rerank(normalized_question, list(merged.values()), limit)
-    return _rerank(normalized_question, _dense_search(normalized_question, limit * 3, target_collection, document_id), limit)
+    return _rerank(
+        normalized_question,
+        _dense_search(normalized_question, limit * 3, target_collection, document_id),
+        limit,
+    )
+
 
 def list_indexed_documents(collection: Collection | None = None) -> list[dict[str, object]]:
     """Return a compact inventory of PDF documents stored in ChromaDB."""

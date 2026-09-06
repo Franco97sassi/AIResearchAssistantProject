@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any
 
 END = "__end__"
 
@@ -44,7 +45,7 @@ class StateGraph:
     ) -> None:
         self._conditional_edges[source] = _ConditionalEdges(router=path, path_map=path_map)
 
-    def compile(self) -> "CompiledStateGraph":
+    def compile(self) -> CompiledStateGraph:
         if self._entry_point is None:
             raise ValueError("StateGraph requires an entry point before compile().")
         return CompiledStateGraph(

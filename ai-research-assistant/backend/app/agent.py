@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import re
-from typing import Callable, Literal, TypedDict
-
-from langgraph.graph import END, StateGraph
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Literal, TypedDict
 
 from app.chat_history import build_retrieval_query
 from app.llm import RAGAnswer, generate_rag_answer
 from app.rag import SearchResult, search_similar_chunks
+from langgraph.graph import END, StateGraph
 
 
 @dataclass(frozen=True)
@@ -94,11 +94,7 @@ def _append_step(state: ResearchAgentState, step: AgentStep) -> list[AgentStep]:
 
 
 def _content_terms(text: str) -> set[str]:
-    return {
-        term
-        for term in re.findall(r"[a-záéíóúñü0-9]+", text.lower())
-        if len(term) > 3
-    }
+    return {term for term in re.findall(r"[a-záéíóúñü0-9]+", text.lower()) if len(term) > 3}
 
 
 def _think_node(state: ResearchAgentState) -> dict:
@@ -234,9 +230,7 @@ def _answer_node(state: ResearchAgentState) -> dict:
 
 def _cite_node(state: ResearchAgentState) -> dict:
     verified_sources = [
-        result
-        for result in state["results"]
-        if result.filename.strip() and result.page_number > 0
+        result for result in state["results"] if result.filename.strip() and result.page_number > 0
     ]
     if not state["needs_search"]:
         decision = "sin_fuentes_requeridas"
@@ -300,6 +294,7 @@ def run_research_agent(
     answer_tool: AnswerTool = generate_rag_answer,
 ) -> AgentRun:
     """Run the PDF research agent as a real LangGraph state graph."""
+
     def scoped_search_tool(query: str, result_limit: int) -> list[SearchResult]:
         if document_id:
             return search_similar_chunks(

@@ -2,8 +2,8 @@ from pathlib import Path
 
 from app.langchain_rag import (
     build_langchain_documents,
-    build_langchain_retriever,
     build_langchain_rag_prompt,
+    build_langchain_retriever,
     get_langchain_component_status,
     load_pdf_with_langchain,
     page_from_langchain_document,
@@ -12,9 +12,7 @@ from app.pdf_loader import PDFPage, PDFTextExtractionResult
 
 
 def test_langchain_document_contract_has_page_content_and_metadata():
-    extraction = PDFTextExtractionResult(
-        pages=[PDFPage(page_number=2, text="Contenido del paper")]
-    )
+    extraction = PDFTextExtractionResult(pages=[PDFPage(page_number=2, text="Contenido del paper")])
 
     documents = build_langchain_documents(
         extraction,
