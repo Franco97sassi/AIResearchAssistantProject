@@ -44,9 +44,8 @@ else:
             return decorator
 
         def run(self, transport: str = "stdio") -> None:
-            raise RuntimeError(
-                "Instala la dependencia 'mcp' para ejecutar el servidor MCP real."
-            )
+            raise RuntimeError("Instala la dependencia 'mcp' para ejecutar el servidor MCP real.")
+
 
 mcp = FastMCP("ai-research-assistant")
 

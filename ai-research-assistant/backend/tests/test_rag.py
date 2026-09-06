@@ -7,8 +7,8 @@ from app.rag import (
     HashingEmbeddingFunction,
     chunk_pdf_text,
     index_pdf_text,
-    search_similar_chunks,
     list_indexed_documents,
+    search_similar_chunks,
 )
 
 
@@ -37,11 +37,7 @@ def test_chunk_pdf_text_creates_overlapping_chunks():
 def test_index_pdf_text_stores_chunks_with_metadata(tmp_path):
     collection = create_collection(tmp_path)
     extraction = PDFTextExtractionResult(
-        pages=[
-            PDFPage(
-                page_number=3, text="Vector databases store embeddings for RAG demos."
-            )
-        ]
+        pages=[PDFPage(page_number=3, text="Vector databases store embeddings for RAG demos.")]
     )
 
     result = index_pdf_text(
@@ -64,9 +60,7 @@ def test_search_similar_chunks_returns_relevant_context(tmp_path):
     extraction = PDFTextExtractionResult(
         pages=[
             PDFPage(page_number=1, text="Bananas and apples are fruits."),
-            PDFPage(
-                page_number=2, text="Chroma stores vector embeddings for retrieval."
-            ),
+            PDFPage(page_number=2, text="Chroma stores vector embeddings for retrieval."),
         ]
     )
     index_pdf_text(extraction, "notes.pdf", "stored_notes.pdf", collection=collection)
@@ -80,7 +74,8 @@ def test_search_similar_chunks_returns_relevant_context(tmp_path):
     assert results[0].filename == "notes.pdf"
     assert results[0].page_number == 2
 
-    def test_list_indexed_documents_groups_chunks_by_pdf(tmp_path):
+
+def test_list_indexed_documents_groups_chunks_by_pdf(tmp_path):
     collection = create_collection(tmp_path)
     extraction = PDFTextExtractionResult(
         pages=[

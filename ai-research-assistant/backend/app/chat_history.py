@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from uuid import uuid4
@@ -14,7 +14,7 @@ _lock = Lock()
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def create_session_id() -> str:
@@ -103,6 +103,7 @@ def get_recent_history(session_id: str, limit: int = MAX_MEMORY_EXCHANGES) -> li
     if not isinstance(messages, list):
         return []
     return messages[-limit:]
+
 
 def filter_history_for_document(
     history: list[dict],

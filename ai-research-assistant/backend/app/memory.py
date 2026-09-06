@@ -28,9 +28,7 @@ def create_session_id() -> str:
 
 def _session_path(session_id: str) -> Path:
     safe_session_id = "".join(
-        character
-        for character in session_id
-        if character.isalnum() or character in {"-", "_"}
+        character for character in session_id if character.isalnum() or character in {"-", "_"}
     )
     if not safe_session_id:
         safe_session_id = create_session_id()
@@ -56,9 +54,7 @@ def load_conversation(session_id: str | None) -> ConversationState:
     return ConversationState(session_id=path.stem, turns=turns[-MAX_HISTORY_MESSAGES:])
 
 
-def save_conversation(
-    session_id: str, turns: list[ConversationTurn]
-) -> ConversationState:
+def save_conversation(session_id: str, turns: list[ConversationTurn]) -> ConversationState:
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     path = _session_path(session_id)
     trimmed_turns = turns[-MAX_HISTORY_MESSAGES:]

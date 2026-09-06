@@ -14,6 +14,7 @@ from app.langchain_rag import build_langchain_rag_prompt
 from app.rag import SearchResult
 from app.tokens import estimate_tokens, truncate_to_token_budget
 
+
 @dataclass(frozen=True)
 class RAGAnswer:
     answer: str
@@ -22,12 +23,11 @@ class RAGAnswer:
     estimated_prompt_tokens: int
     included_contexts: int
 
+
 def _format_context_sources(contexts: list[SearchResult]) -> str:
     formatted_chunks: list[str] = []
     for index, context in enumerate(contexts, start=1):
-        source_label = (
-            f"Fuente {index}: {context.filename}, pagina {context.page_number}"
-        )
+        source_label = f"Fuente {index}: {context.filename}, pagina {context.page_number}"
         formatted_chunks.append(f"[{source_label}]\n{context.text}")
     return "\n\n".join(formatted_chunks)
 
@@ -40,9 +40,7 @@ def _format_chat_history(history: list[dict] | None) -> str:
     for index, message in enumerate(history, start=1):
         question = str(message.get("question", "")).strip()
         answer = str(message.get("answer", "")).strip()
-        formatted_turns.append(
-            f"Turno {index}\nUsuario: {question}\nAsistente: {answer}"
-        )
+        formatted_turns.append(f"Turno {index}\nUsuario: {question}\nAsistente: {answer}")
     return "\n\n".join(formatted_turns)
 
 
@@ -54,6 +52,7 @@ def _copy_context_with_text(context: SearchResult, text: str) -> SearchResult:
         document_id=context.document_id,
         distance=context.distance,
     )
+
 
 def _select_contexts_for_budget(
     question: str,
@@ -86,22 +85,20 @@ def _select_contexts_for_budget(
             text_budget = max(0, remaining_tokens - label_tokens)
             truncated_text = truncate_to_token_budget(context.text, text_budget)
             if truncated_text:
-                selected_contexts.append(
-                    _copy_context_with_text(context, truncated_text)
-                )
+                selected_contexts.append(_copy_context_with_text(context, truncated_text))
         break
 
     context_block = _format_context_sources(selected_contexts)
-    
-    full_prompt = (
-        f"{prompt_without_context}{context_block or 'Sin contexto recuperado.'}"
-    )
+
+    full_prompt = f"{prompt_without_context}{context_block or 'Sin contexto recuperado.'}"
     return selected_contexts, estimate_tokens(full_prompt)
+
+
 def _build_local_answer(
     question: str,
     contexts: list[SearchResult],
     history: list[dict] | None = None,
-    ) -> str:
+) -> str:
     if not contexts:
         return (
             "No encontre fragmentos relevantes en los PDFs indexados para responder "
@@ -110,13 +107,12 @@ def _build_local_answer(
 
     memory_note = ""
     if history:
-          memory_note = "La memoria conversacional esta activa y se uso para recuperar contexto.\n\n"
+        memory_note = "La memoria conversacional esta activa y se uso para recuperar contexto.\n\n"
 
     source_summaries = []
     for context in contexts:
         source_summaries.append(
-            f"- {context.text} "
-            f"(fuente: {context.filename}, pagina {context.page_number})"
+            f"- {context.text} (fuente: {context.filename}, pagina {context.page_number})"
         )
 
     return (
@@ -147,9 +143,10 @@ def generate_rag_answer(
         normalized_question, contexts, history_block, system_prompt
     )
     if LLM_PROVIDER != "groq" or not GROQ_API_KEY:
-         return RAGAnswer(
+        return RAGAnswer(
             answer=_build_local_answer(normalized_question, selected_contexts, history),
-            model=f"{LLM_PROVIDER}-local-context-fallback",            used_llm=False,
+            model=f"{LLM_PROVIDER}-local-context-fallback",
+            used_llm=False,
             estimated_prompt_tokens=estimated_prompt_tokens,
             included_contexts=len(selected_contexts),
         )
@@ -168,7 +165,8 @@ def generate_rag_answer(
             question=normalized_question,
             history_block=history_block,
             context_block=context_block or "Sin contexto recuperado.",
-        )[1].content    )
+        )[1].content
+    )
 
     try:
         client = Groq(api_key=GROQ_API_KEY)

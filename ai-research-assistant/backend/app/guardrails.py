@@ -16,6 +16,7 @@ INJECTION_PATTERNS = [
     ]
 ]
 
+
 @dataclass(frozen=True)
 class GuardrailResult:
     allowed: bool

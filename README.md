@@ -127,6 +127,25 @@ Respuesta en español con fuentes y memoria de sesión
 
 El flujo no depende de búsqueda exacta por palabras: cada chunk del PDF y cada pregunta se transforman en vectores para recuperar los fragmentos más cercanos antes de generar la respuesta. Por defecto el proyecto usa `HashingVectorizer` para funcionar offline; si configuras `EMBEDDING_PROVIDER=sentence-transformers`, usa un modelo local de Sentence Transformers para mejorar la recuperación semántica. Si cambias de proveedor de embeddings, usa una colección o carpeta `CHROMA_DIR` nueva para evitar mezclar vectores de distinta dimensión.
 
+### Componentes y secuencia
+
+```text
+Navegador/CLI
+     │ PDF y preguntas
+     ▼
+React ───────────────► FastAPI
+                         ├── PyMuPDF/OCR ──► chunks
+                         ├── embeddings ───► ChromaDB
+                         ├── LangGraph ────► búsqueda + crítica + respuesta
+                         └── historial/observabilidad local
+```
+
+En una consulta, FastAPI valida la entrada, recupera el historial de la sesión,
+busca los fragmentos más relevantes y entrega al generador solo el contexto que
+cabe en el presupuesto configurado. La respuesta conserva las fuentes y páginas
+recuperadas para que el usuario pueda verificarla. Los intentos básicos de prompt
+injection se rechazan antes de ejecutar la búsqueda o el agente.
+
 ## Casos de uso
 
 - Papers académicos y documentación técnica.
@@ -142,7 +161,7 @@ El flujo no depende de búsqueda exacta por palabras: cada chunk del PDF y cada 
 cd ai-research-assistant/backend
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 cp .env.example .env
 uvicorn app.main:app --reload
 ```
@@ -163,7 +182,6 @@ La app queda disponible en `http://localhost:5173`.
 ## Ejecutar con Docker
 
 ```bash
-cd ai-research-assistant
 docker compose up --build
 ```
 
@@ -199,17 +217,54 @@ docker compose up --build
 7. Explica que el backend aplica un presupuesto de contexto con `MAX_CONTEXT_TOKENS`.
 8. Reinicia historial desde la UI si quieres comenzar otra conversación.
 
+### Demo reproducible por terminal
+
+Con los contenedores en ejecución, el script comprueba la API, sube un PDF,
+recupera su `document_id` y realiza una consulta restringida a ese documento:
+
+```bash
+./scripts/demo.sh Guia.pdf "Cual es la idea principal del documento?"
+```
+
+Puedes usar otro backend mediante `API_URL=https://mi-api.example.com`. El script
+solo necesita Bash, `curl` y Python 3. No expongas documentos privados en una demo
+pública; los archivos, vectores e historiales persisten en los volúmenes locales.
+
 ## Pruebas
+
+Las dependencias de ejecución están fijadas en `requirements.txt`; las herramientas
+de desarrollo y pruebas están separadas en `requirements-dev.txt`. `pyproject.toml`
+centraliza pytest, cobertura mínima del 75 %, Ruff y mypy.
 
 ```bash
 cd ai-research-assistant/backend
 pytest
+ruff check .
+ruff format --check .
+mypy
 ```
 
 ```bash
 cd ai-research-assistant/frontend
 npm run build
 ```
+
+GitHub Actions ejecuta estas comprobaciones en cada push y pull request y publica
+`coverage.xml` como artefacto. Las pruebas incluyen rutas felices, fallos del LLM,
+validación de archivos, límites de carga, CORS, memoria, filtros por documento,
+guardrails y rechazo de prompt injection.
+
+## Limitaciones conocidas
+
+- La evaluación RAG local usa métricas heurísticas; no sustituye un dataset de
+  evaluación etiquetado ni una revisión humana.
+- La detección de PII y prompt injection se basa en patrones y debe complementarse
+  con controles adicionales antes de procesar información sensible.
+- ChromaDB, el historial y las métricas se almacenan localmente; una instalación
+  con múltiples réplicas necesita servicios compartidos y aislamiento por usuario.
+- El OCR depende de que Tesseract y sus idiomas estén instalados en el sistema.
+- El streaming actual entrega una respuesta ya generada palabra por palabra; no es
+  streaming nativo del proveedor LLM.
 
 ## Deploy sugerido
 
