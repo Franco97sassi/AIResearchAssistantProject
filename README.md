@@ -205,6 +205,37 @@ docker compose up --build
 | `UPLOAD_DIR` | Carpeta de PDFs subidos. |
 | `ALLOWED_ORIGINS` | Orígenes CORS permitidos para el frontend. |
 | `VITE_API_BASE_URL` | URL del backend usada por React. |
+| `AUTH_REQUIRED` | Obliga a enviar `X-API-Key`; debe ser `true` fuera de desarrollo local. |
+| `API_KEY_TENANTS` | JSON que asigna cada API key a un tenant. El tenant se aplica al indexar, buscar y guardar sesiones. |
+
+## Evaluación de retrieval
+
+El dataset versionado en `backend/evaluation/retrieval_dataset.jsonl` contiene preguntas,
+texto de corpus y el documento relevante esperado. El runner compara embeddings hashing/TF-IDF,
+dos tamaños de chunk y reranking, y calcula Hit Rate, Precision, Recall, MRR y nDCG en `k`:
+
+```bash
+cd ai-research-assistant/backend
+python -m app.retrieval_evaluation \
+  --dataset evaluation/retrieval_dataset.jsonl \
+  --output evaluation/results.json --k 3
+```
+
+El formato JSONL permite ampliar el benchmark con ejemplos revisados por humanos sin mezclarlo
+con datos privados. Para una comparación semántica de producción, configura además
+`sentence-transformers` en un entorno con el modelo descargado y registra la versión del modelo.
+
+## Staging, autenticación y trazas
+
+1. Copia `.env.staging.example` a un archivo de secretos no versionado y cambia la API key,
+   dominio y proveedor del modelo.
+2. Ejecuta `docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build`.
+3. Verifica `/health`; los endpoints de documentos, chat, métricas y trazas usan `X-API-Key`.
+
+La API deriva el tenant de la clave (no de datos enviados por el cliente), almacena `owner_id`
+en cada chunk y lo añade obligatoriamente al filtro de retrieval. Cada respuesta incluye
+`X-Trace-ID`; también se acepta `X-Request-ID` para correlación. Consulta los eventos de una
+petición mediante `GET /traces/{trace_id}`. No expongas `/metrics` o `/traces` sin autenticación.
 
 ## Flujo de demo para entrevista
 

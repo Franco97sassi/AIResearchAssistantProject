@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -52,3 +53,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 API_KEYS = [key.strip() for key in os.getenv("API_KEYS", "").split(",") if key.strip()]
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() == "true"
+# JSON object whose keys are API keys and values are tenant identifiers.
+API_KEY_TENANTS: dict[str, str] = json.loads(os.getenv("API_KEY_TENANTS", "{}"))
+TRACE_RETENTION_DAYS = int(os.getenv("TRACE_RETENTION_DAYS", "30"))

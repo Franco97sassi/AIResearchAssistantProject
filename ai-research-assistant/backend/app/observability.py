@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from app.config import LOG_DIR, METRICS_DB_PATH
 
 _lock = Lock()
+current_trace_id: ContextVar[str] = ContextVar("trace_id", default="")
 
 
 def _utc_now() -> str:
@@ -34,6 +36,9 @@ def init_observability() -> None:
             )
             """
         )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(ai_events)")}
+        if "trace_id" not in columns:
+            connection.execute("ALTER TABLE ai_events ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''")
         connection.commit()
 
 
@@ -53,8 +58,8 @@ def log_event(
             """
             INSERT INTO ai_events (
                 created_at, event_type, latency_ms, model,
-                source_count, estimated_tokens, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                source_count, estimated_tokens, metadata, trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _utc_now(),
@@ -64,6 +69,7 @@ def log_event(
                 int(source_count or 0),
                 int(estimated_tokens or 0),
                 json.dumps(metadata, ensure_ascii=False, default=str),
+                current_trace_id.get(),
             ),
         )
         connection.commit()
@@ -94,7 +100,7 @@ def collect_metrics() -> dict[str, Any]:
         ).fetchall()
         recent = connection.execute(
             """
-            SELECT created_at, event_type, latency_ms, model, source_count, estimated_tokens, metadata
+            SELECT created_at, event_type, latency_ms, model, source_count, estimated_tokens, metadata, trace_id
             FROM ai_events
             ORDER BY id DESC
             LIMIT 10
@@ -115,3 +121,16 @@ def collect_metrics() -> dict[str, Any]:
             for row in recent
         ],
     }
+
+
+def get_trace(trace_id: str) -> list[dict[str, Any]]:
+    """Return all spans/events for one request trace."""
+    init_observability()
+    with _lock, sqlite3.connect(METRICS_DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT created_at, event_type, latency_ms, model, source_count, "
+            "estimated_tokens, metadata, trace_id FROM ai_events WHERE trace_id = ? ORDER BY id",
+            (trace_id,),
+        ).fetchall()
+    return [{**dict(row), "metadata": json.loads(row["metadata"] or "{}")} for row in rows]
