@@ -1,0 +1,138 @@
+[
+  {
+    "configuration": {
+      "embedding": "hashing",
+      "chunk_size_words": 40,
+      "overlap_words": 8,
+      "rerank": false,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "mrr_at_k": 0.8056,
+      "ndcg_at_k": 0.8552
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "hashing",
+      "chunk_size_words": 40,
+      "overlap_words": 8,
+      "rerank": true,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 0.8333,
+      "precision_at_k": 0.2778,
+      "recall_at_k": 0.8333,
+      "mrr_at_k": 0.8333,
+      "ndcg_at_k": 0.8333
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "hashing",
+      "chunk_size_words": 80,
+      "overlap_words": 16,
+      "rerank": false,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 1.0,
+      "precision_at_k": 0.3333,
+      "recall_at_k": 1.0,
+      "mrr_at_k": 0.8056,
+      "ndcg_at_k": 0.8552
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "hashing",
+      "chunk_size_words": 80,
+      "overlap_words": 16,
+      "rerank": true,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 0.8333,
+      "precision_at_k": 0.2778,
+      "recall_at_k": 0.8333,
+      "mrr_at_k": 0.8333,
+      "ndcg_at_k": 0.8333
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "tfidf",
+      "chunk_size_words": 40,
+      "overlap_words": 8,
+      "rerank": false,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 0.8333,
+      "precision_at_k": 0.2778,
+      "recall_at_k": 0.8333,
+      "mrr_at_k": 0.8333,
+      "ndcg_at_k": 0.8333
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "tfidf",
+      "chunk_size_words": 40,
+      "overlap_words": 8,
+      "rerank": true,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 0.8333,
+      "precision_at_k": 0.2778,
+      "recall_at_k": 0.8333,
+      "mrr_at_k": 0.8333,
+      "ndcg_at_k": 0.8333
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "tfidf",
+      "chunk_size_words": 80,
+      "overlap_words": 16,
+      "rerank": false,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 0.8333,
+      "precision_at_k": 0.2778,
+      "recall_at_k": 0.8333,
+      "mrr_at_k": 0.8333,
+      "ndcg_at_k": 0.8333
+    }
+  },
+  {
+    "configuration": {
+      "embedding": "tfidf",
+      "chunk_size_words": 80,
+      "overlap_words": 16,
+      "rerank": true,
+      "k": 3
+    },
+    "metrics": {
+      "queries": 6,
+      "hit_rate_at_k": 0.8333,
+      "precision_at_k": 0.2778,
+      "recall_at_k": 0.8333,
+      "mrr_at_k": 0.8333,
+      "ndcg_at_k": 0.8333
+    }
+  }
+]

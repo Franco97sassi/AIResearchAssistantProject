@@ -209,9 +209,12 @@ def index_pdf_text(
     filename: str,
     stored_filename: str,
     collection: Collection | None = None,
+    owner_id: str = "public",
+    chunk_size: int = 900,
+    chunk_overlap: int = 150,
 ) -> IndexingResult:
     """Store PDF chunks in ChromaDB so they can be retrieved by questions."""
-    chunks = chunk_pdf_text(extraction_result)
+    chunks = chunk_pdf_text(extraction_result, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     document_id = uuid4().hex
     target_collection = collection or get_collection()
 
@@ -226,6 +229,7 @@ def index_pdf_text(
                     "stored_filename": stored_filename,
                     "page_number": chunk.page_number,
                     "chunk_index": chunk.chunk_index,
+                    "owner_id": owner_id,
                 }
                 for chunk in chunks
             ],
@@ -243,11 +247,18 @@ def _result_key(result: SearchResult) -> tuple[str, int, str]:
     return (result.document_id, result.page_number, result.text[:80])
 
 
-def _build_document_filter(document_id: str | None) -> dict[str, str] | None:
+def _build_document_filter(
+    document_id: str | None, owner_id: str | None = None
+) -> dict[str, object] | None:
     normalized_document_id = (document_id or "").strip()
-    if not normalized_document_id:
-        return None
-    return {"document_id": normalized_document_id}
+    clauses: list[dict[str, object]] = []
+    if normalized_document_id:
+        clauses.append({"document_id": normalized_document_id})
+    if owner_id:
+        clauses.append({"owner_id": owner_id})
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses} if clauses else None
 
 
 def _dense_search(
@@ -255,8 +266,9 @@ def _dense_search(
     limit: int,
     collection: Collection,
     document_id: str | None = None,
+    owner_id: str | None = None,
 ) -> list[SearchResult]:
-    where = _build_document_filter(document_id)
+    where = _build_document_filter(document_id, owner_id)
     query_kwargs = {"query_texts": [question], "n_results": limit}
     if where is not None:
         query_kwargs["where"] = where
@@ -281,8 +293,9 @@ def _bm25_search(
     limit: int,
     collection: Collection,
     document_id: str | None = None,
+    owner_id: str | None = None,
 ) -> list[SearchResult]:
-    where = _build_document_filter(document_id)
+    where = _build_document_filter(document_id, owner_id)
     get_kwargs = {"include": ["documents", "metadatas"]}
     if where is not None:
         get_kwargs["where"] = where
@@ -333,6 +346,7 @@ def search_similar_chunks(
     limit: int = 4,
     document_id: str | None = None,
     collection: Collection | None = None,
+    owner_id: str | None = None,
 ) -> list[SearchResult]:
     """Find relevant chunks using dense, BM25, or hybrid retrieval plus optional reranking."""
     normalized_question = question.strip()
@@ -343,19 +357,19 @@ def search_similar_chunks(
     if mode == "bm25":
         return _rerank(
             normalized_question,
-            _bm25_search(normalized_question, limit * 3, target_collection, document_id),
+            _bm25_search(normalized_question, limit * 3, target_collection, document_id, owner_id),
             limit,
         )
     if mode == "hybrid":
         merged: dict[tuple[str, int, str], SearchResult] = {}
         for result in _dense_search(
-            normalized_question, limit * 3, target_collection, document_id
-        ) + _bm25_search(normalized_question, limit * 3, target_collection, document_id):
+            normalized_question, limit * 3, target_collection, document_id, owner_id
+        ) + _bm25_search(normalized_question, limit * 3, target_collection, document_id, owner_id):
             merged.setdefault(_result_key(result), result)
         return _rerank(normalized_question, list(merged.values()), limit)
     return _rerank(
         normalized_question,
-        _dense_search(normalized_question, limit * 3, target_collection, document_id),
+        _dense_search(normalized_question, limit * 3, target_collection, document_id, owner_id),
         limit,
     )
 
