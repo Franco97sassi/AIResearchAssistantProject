@@ -4,7 +4,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -14,6 +24,7 @@ from app.agent import AgentStep, run_research_agent
 from app.chat_history import (
     append_chat_exchange,
     build_retrieval_query,
+    delete_tenant_sessions,
     filter_history_for_document,
     get_recent_history,
     get_session,
@@ -30,10 +41,11 @@ from app.config import (
 from app.evaluation import evaluate_rag_response
 from app.guardrails import answer_has_required_sources, inspect_text
 from app.invoice import extract_invoice_fields
-from app.jobs import enqueue_pdf, fetch_job, job_belongs_to, serialize_job
+from app.jobs import delete_tenant_jobs, enqueue_pdf, fetch_job, job_belongs_to, serialize_job
 from app.llm import generate_rag_answer
 from app.observability import (
     collect_metrics,
+    configure_opentelemetry,
     current_trace_id,
     get_trace,
     init_observability,
@@ -41,8 +53,9 @@ from app.observability import (
     prometheus_metrics,
 )
 from app.pdf_loader import extract_text_from_pdf
-from app.rag import SearchResult, index_pdf_text, search_similar_chunks
+from app.rag import SearchResult, delete_tenant_documents, index_pdf_text, search_similar_chunks
 from app.security import Principal, get_principal
+from app.tenant_storage import delete_tenant_uploads, register_tenant_upload
 
 
 class InvoiceExtractionResponse(BaseModel):
@@ -146,6 +159,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+configure_opentelemetry(app)
 
 
 @app.middleware("http")
@@ -256,7 +270,9 @@ def evaluate_rag(request: RAGEvaluationRequest, _principal: Principal = Depends(
     return evaluation.__dict__
 
 
-async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:
+async def _save_pdf_upload(
+    file: UploadFile, owner_id: str = "public"
+) -> tuple[str, str, Path, int]:
     if not file.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -290,6 +306,7 @@ async def _save_pdf_upload(file: UploadFile) -> tuple[str, str, Path, int]:
     finally:
         await file.close()
 
+    register_tenant_upload(owner_id, safe_filename)
     return original_filename, safe_filename, destination, bytes_written
 
 
@@ -309,7 +326,9 @@ def _empty_pdf_error(extraction_result) -> HTTPException:
 
 @app.post("/upload-pdf", status_code=status.HTTP_201_CREATED)
 async def upload_pdf(file: UploadFile = File(...), principal: Principal = Depends(get_principal)):
-    original_filename, safe_filename, destination, bytes_written = await _save_pdf_upload(file)
+    original_filename, safe_filename, destination, bytes_written = await _save_pdf_upload(
+        file, principal.tenant_id
+    )
     extraction_result = await run_in_threadpool(
         extract_text_from_pdf, destination, use_ocr_fallback=True
     )
@@ -345,20 +364,62 @@ async def upload_pdf(file: UploadFile = File(...), principal: Principal = Depend
 
 @app.post("/jobs/upload-pdf", status_code=status.HTTP_202_ACCEPTED)
 async def enqueue_pdf_upload(
-    file: UploadFile = File(...), principal: Principal = Depends(get_principal)
+    file: UploadFile = File(...),
+    principal: Principal = Depends(get_principal),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
 ):
     """Persist an upload quickly and delegate OCR/indexing to an RQ worker."""
-    original_filename, safe_filename, destination, bytes_written = await _save_pdf_upload(file)
+    original_filename, safe_filename, destination, bytes_written = await _save_pdf_upload(
+        file, principal.tenant_id
+    )
     try:
         job = await run_in_threadpool(
-            enqueue_pdf, destination, original_filename, safe_filename, principal.tenant_id
+            enqueue_pdf,
+            destination,
+            original_filename,
+            safe_filename,
+            principal.tenant_id,
+            idempotency_key,
         )
     except Exception as exc:
         destination.unlink(missing_ok=True)
         raise HTTPException(
             status_code=503, detail="La cola de procesamiento no esta disponible"
         ) from exc
-    return {"job_id": job.id, "status": "queued", "size_bytes": bytes_written}
+    reused = bool(idempotency_key and job.meta.get("stored_filename") != safe_filename)
+    if reused:
+        destination.unlink(missing_ok=True)
+    return {
+        "job_id": job.id,
+        "status": str(job.get_status(refresh=True)) if reused else "queued",
+        "size_bytes": bytes_written,
+        "idempotent_replay": reused,
+    }
+
+
+@app.delete("/tenants/me/data")
+async def delete_current_tenant_data(principal: Principal = Depends(get_principal)):
+    """Erase the authenticated tenant's vectors, uploads, sessions, and pending jobs."""
+    if not principal.authenticated:
+        raise HTTPException(status_code=403, detail="El borrado requiere autenticacion")
+
+    job_result = await run_in_threadpool(delete_tenant_jobs, principal.tenant_id)
+    if job_result["active_jobs"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Hay trabajos activos; reintenta el borrado cuando hayan terminado",
+        )
+
+    document_result = await run_in_threadpool(delete_tenant_documents, principal.tenant_id)
+    files_deleted = await run_in_threadpool(delete_tenant_uploads, principal.tenant_id)
+    sessions_deleted = await run_in_threadpool(delete_tenant_sessions, principal.tenant_id)
+    return {
+        "tenant_id": principal.tenant_id,
+        "chunks_deleted": document_result["chunks_deleted"],
+        "files_deleted": files_deleted,
+        "sessions_deleted": sessions_deleted,
+        "jobs_deleted": job_result["jobs_deleted"],
+    }
 
 
 @app.get("/jobs/{job_id}")
@@ -376,7 +437,9 @@ async def get_pdf_job(job_id: str, principal: Principal = Depends(get_principal)
 async def extract_invoice(
     file: UploadFile = File(...), _principal: Principal = Depends(get_principal)
 ):
-    original_filename, safe_filename, destination, _bytes_written = await _save_pdf_upload(file)
+    original_filename, safe_filename, destination, _bytes_written = await _save_pdf_upload(
+        file, _principal.tenant_id
+    )
     extraction_result = await run_in_threadpool(
         extract_text_from_pdf, destination, use_ocr_fallback=True
     )

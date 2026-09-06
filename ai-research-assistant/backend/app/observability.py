@@ -12,7 +12,31 @@ from app.config import (
     LLM_OUTPUT_COST_PER_MILLION,
     LOG_DIR,
     METRICS_DB_PATH,
+    OTEL_ENABLED,
+    OTEL_EXPORTER_OTLP_ENDPOINT,
+    OTEL_SERVICE_NAME,
 )
+
+
+def configure_opentelemetry(app: Any) -> None:
+    """Enable standard FastAPI spans and OTLP export when explicitly configured."""
+    if not OTEL_ENABLED:
+        return
+
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    provider = TracerProvider(resource=Resource.create({"service.name": OTEL_SERVICE_NAME}))
+    exporter = OTLPSpanExporter(
+        endpoint=OTEL_EXPORTER_OTLP_ENDPOINT or None,
+        insecure=OTEL_EXPORTER_OTLP_ENDPOINT.startswith("http://"),
+    )
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+
 
 _lock = Lock()
 current_trace_id: ContextVar[str] = ContextVar("trace_id", default="")

@@ -53,6 +53,8 @@ flowchart LR
 - **Observabilidad:** correlación por `X-Trace-ID`, métricas de latencia/tokens/coste, Prometheus,
   Grafana y reglas de alerta.
 - **Continuidad:** backups con checksum y retención, restauración ensayable y decisiones en ADR.
+- **Trazas estándar:** exportación OpenTelemetry/OTLP opcional mediante el collector incluido.
+- **Privacidad:** borrado autenticado de vectores, PDFs, sesiones y trabajos pendientes por tenant.
 
 Consulta el [runbook de operaciones](docs/operations.md) y los [ADR](docs/adr/) antes de
 configurar un entorno remoto.
@@ -241,6 +243,20 @@ docker compose up --build
 | `VITE_API_BASE_URL` | URL del backend usada por React. |
 | `AUTH_REQUIRED` | Obliga a enviar `X-API-Key`; debe ser `true` fuera de desarrollo local. |
 | `API_KEY_TENANTS` | JSON que asigna cada API key a un tenant. El tenant se aplica al indexar, buscar y guardar sesiones. |
+| `JOB_MAX_RETRIES` | Máximo de reintentos RQ para uploads asíncronos; por defecto `3`. |
+| `JOB_RETRY_INTERVAL_SECONDS` | Espera entre reintentos; por defecto `30`. |
+| `OTEL_ENABLED` | Activa instrumentación FastAPI y exportación OTLP. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Endpoint gRPC del OpenTelemetry Collector. |
+
+### Jobs idempotentes y borrado del tenant
+
+Envía `Idempotency-Key` en `POST /jobs/upload-pdf`: la combinación tenant/clave produce el mismo
+trabajo y `document_id`, y los reintentos hacen `upsert` de los mismos chunks. RQ aplica reintentos
+acotados. Una repetición devuelve `idempotent_replay: true` y no conserva el upload duplicado.
+
+`DELETE /tenants/me/data`, disponible solo con autenticación, cancela trabajos pendientes y borra
+vectores, uploads e historial del tenant derivado de la API key. Devuelve HTTP 409 si hay un worker
+procesando uno de sus documentos; esto evita que un trabajo en vuelo recree datos tras el borrado.
 
 ## Evaluación de retrieval
 

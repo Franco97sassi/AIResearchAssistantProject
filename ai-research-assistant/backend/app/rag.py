@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import TypedDict
 from uuid import uuid4
 
 import chromadb
@@ -51,6 +52,11 @@ class SearchResult:
     page_number: int
     document_id: str
     distance: float | None
+
+
+class TenantDocumentDeletion(TypedDict):
+    chunks_deleted: int
+    stored_filenames: list[str]
 
 
 class HashingEmbeddingFunction(EmbeddingFunction[Documents]):
@@ -212,14 +218,17 @@ def index_pdf_text(
     owner_id: str = "public",
     chunk_size: int = 900,
     chunk_overlap: int = 150,
+    document_id: str | None = None,
 ) -> IndexingResult:
     """Store PDF chunks in ChromaDB so they can be retrieved by questions."""
     chunks = chunk_pdf_text(extraction_result, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    document_id = uuid4().hex
+    document_id = document_id or uuid4().hex
     target_collection = collection or get_collection()
 
     if chunks:
-        target_collection.add(
+        # ``upsert`` makes a retried asynchronous job safe after a worker dies
+        # between writing vectors and reporting completion.
+        target_collection.upsert(
             ids=[f"{document_id}:{chunk.page_number}:{chunk.chunk_index}" for chunk in chunks],
             documents=[chunk.text for chunk in chunks],
             metadatas=[
@@ -241,6 +250,25 @@ def index_pdf_text(
         chunks_indexed=len(chunks),
         collection_name=target_collection.name,
     )
+
+
+def delete_tenant_documents(
+    owner_id: str, collection: Collection | None = None
+) -> TenantDocumentDeletion:
+    """Delete every vector owned by a tenant and return its upload filenames."""
+    target_collection = collection or get_collection()
+    stored = target_collection.get(where={"owner_id": owner_id}, include=["metadatas"])
+    ids = [str(item) for item in stored.get("ids", [])]
+    stored_filenames = sorted(
+        {
+            str(metadata.get("stored_filename", ""))
+            for metadata in stored.get("metadatas", [])
+            if metadata and metadata.get("stored_filename")
+        }
+    )
+    if ids:
+        target_collection.delete(ids=ids)
+    return {"chunks_deleted": len(ids), "stored_filenames": stored_filenames}
 
 
 def _result_key(result: SearchResult) -> tuple[str, int, str]:
