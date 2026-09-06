@@ -6,12 +6,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def secret(name: str) -> str | None:
+    """Read a secret from NAME_FILE (Docker/Kubernetes) before falling back to NAME."""
+    file_path = os.getenv(f"{name}_FILE")
+    if file_path:
+        return Path(file_path).read_text(encoding="utf-8").strip()
+    return os.getenv(name)
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", BASE_DIR / "uploads"))
 MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "20"))
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 OCR_LANGUAGE = os.getenv("OCR_LANGUAGE", "spa+eng")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = secret("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
@@ -45,9 +54,9 @@ RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-
 LOG_DIR = Path(os.getenv("LOG_DIR", BASE_DIR / "logs"))
 METRICS_DB_PATH = Path(os.getenv("METRICS_DB_PATH", BASE_DIR / "logs" / "metrics.sqlite3"))
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").strip().lower()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = secret("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_API_KEY = secret("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
@@ -57,3 +66,8 @@ AUTH_REQUIRED = os.getenv("AUTH_REQUIRED", "false").strip().lower() == "true"
 # JSON object whose keys are API keys and values are tenant identifiers.
 API_KEY_TENANTS: dict[str, str] = json.loads(os.getenv("API_KEY_TENANTS", "{}"))
 TRACE_RETENTION_DAYS = int(os.getenv("TRACE_RETENTION_DAYS", "30"))
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+JOB_TIMEOUT_SECONDS = int(os.getenv("JOB_TIMEOUT_SECONDS", "900"))
+# USD per million tokens. Keeping prices in configuration makes cost estimates auditable.
+LLM_INPUT_COST_PER_MILLION = float(os.getenv("LLM_INPUT_COST_PER_MILLION", "0"))
+LLM_OUTPUT_COST_PER_MILLION = float(os.getenv("LLM_OUTPUT_COST_PER_MILLION", "0"))

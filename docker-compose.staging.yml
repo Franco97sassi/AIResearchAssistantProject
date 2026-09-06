@@ -20,5 +20,18 @@ services:
   frontend:
     restart: unless-stopped
 
+  worker:
+    restart: unless-stopped
+    environment:
+      CHROMA_DIR: /app/data/chroma
+      HISTORY_DIR: /app/data/history
+      UPLOAD_DIR: /app/data/uploads
+      METRICS_DB_PATH: /app/data/logs/metrics.sqlite3
+    volumes:
+      - staging_data:/app/data
+
+  redis:
+    restart: unless-stopped
+
 volumes:
   staging_data:

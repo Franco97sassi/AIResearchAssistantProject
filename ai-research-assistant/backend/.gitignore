@@ -2,3 +2,4 @@ chat_history.json
 .env
 .env.*
 !.env.example
+!.env.staging.example
