@@ -1,210 +1,27 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 
-type UploadResponse = {
-  message: string;
-  filename: string;
-  stored_filename: string;
-  size_bytes: number;
-  page_count: number;
-  character_count: number;
-  extraction_method: string;
-  ocr_attempted: boolean;
-  ocr_available: boolean;
-  text_preview: string;
-  document_id: string;
-  chunks_indexed: number;
-  collection_name: string;
-};
-
-type Source = {
-  text: string;
-  filename: string;
-  page_number: number;
-  document_id: string;
-  distance: number | null;
-};
-
-type SearchResponse = {
-  question: string;
-  results: Source[];
-};
-
-type AgentStep = {
-  name: string;
-  description: string;
-  tool: string | null;
-  decision: string | null;
-  role?: string | null;
-};
-
-type ChatHistoryMessage = {
-  id: string;
-  question: string;
-  answer: string;
-  model: string;
-  used_llm: boolean;
-  sources: Source[];
-  agent_steps?: AgentStep[];
-  created_at: string;
-};
-
-type ChatResponse = {
-  session_id: string;
-  question: string;
-  answer: string;
-  model: string;
-  used_llm: boolean;
-  sources: Source[];
-  agent_steps?: AgentStep[];
-  agent_framework?: string;
-  history: ChatHistoryMessage[];
-};
-
-type ChatSessionResponse = {
-  session_id: string;
-  created_at: string;
-  updated_at: string;
-  messages: ChatHistoryMessage[];
-};
-
-type SessionSummary = {
-  session_id: string;
-  created_at: string;
-  updated_at: string;
-  message_count: number;
-  last_question: string;
-};
-
-type AiTopicsResponse = {
-  free_first: boolean;
-  covered: string[];
-  intentionally_excluded_paid_model_apis: string[];
-  next_steps: string[];
-};
-
-type MetricsResponse = {
-  event_count: number;
-  average_latency_ms: number;
-  total_estimated_tokens: number;
-  average_source_count: number;
-};
-
-type EvaluationResponse = {
-  faithfulness: number;
-  context_precision: number;
-  context_recall_proxy: number;
-  hallucination_risk: string;
-  grounded: boolean;
-  source_coverage: number;
-  estimated_answer_tokens: number;
-  notes: string[];
-};
-
-type InvoiceResponse = {
-  filename: string;
-  stored_filename: string;
-  page_count: number;
-  character_count: number;
-  extraction_method: string;
-  ocr_attempted: boolean;
-  ocr_available: boolean;
-  cliente: string;
-  importe: number;
-  moneda: string | null;
-  fecha: string | null;
-  numero_factura: string | null;
-  confidence: number;
-  missing_fields: string[];
-  text_preview: string;
-};
-
-type ChatMode = 'rag' | 'agent' | 'stream';
-
-type ChatMessage = {
-  id: string;
-  question: string;
-  answer: string;
-  model: string;
-  usedLlm: boolean;
-  sources: Source[];
-  agentSteps: AgentStep[];
-  createdAt: string;
-};
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-const SESSION_STORAGE_KEY = 'ai-research-assistant-session-id';
-
-function createSessionId(): string {
-  return crypto.randomUUID();
-}
-
-function getInitialSessionId(): string {
-  const storedSessionId = localStorage.getItem(SESSION_STORAGE_KEY);
-  if (storedSessionId) {
-    return storedSessionId;
-  }
-
-  const sessionId = createSessionId();
-  localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-  return sessionId;
-}
-
-async function parseApiError(response: Response): Promise<string> {
-  const fallback = `Error ${response.status}: ${response.statusText}`;
-
-  try {
-    const payload = await response.json();
-    if (typeof payload.detail === 'string') {
-      return payload.detail;
-    }
-    if (Array.isArray(payload.detail)) {
-      return payload.detail
-        .map((item: { msg?: string }) => item.msg ?? JSON.stringify(item))
-        .join(', ');
-    }
-  } catch {
-    return fallback;
-  }
-
-  return fallback;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** exponent;
-  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
-}
-
-function formatDate(value: string): string {
-  if (!value) return 'Sin fecha';
-  return new Date(value).toLocaleString();
-}
-
-function formatDistance(value: number | null): string {
-  if (value === null) return 'Sin distancia';
-  return value.toFixed(4);
-}
-
-function mapHistoryMessage(message: ChatHistoryMessage): ChatMessage {
-  return {
-    id: message.id,
-    question: message.question,
-    answer: message.answer,
-    model: message.model,
-    usedLlm: message.used_llm,
-    sources: message.sources,
-    agentSteps: message.agent_steps ?? [],
-    createdAt: message.created_at,
-  };
-}
+import { ChatMessages } from './components/ChatMessages';
+import { SourceList } from './components/SourceList';
+import { usePersistentSession } from './hooks/usePersistentSession';
+import { API_BASE_URL, parseApiError } from './lib/api';
+import { formatBytes, formatDate, mapHistoryMessage } from './lib/format';
+import type {
+  AiTopicsResponse,
+  ChatMode,
+  ChatMessage,
+  ChatResponse,
+  ChatSessionResponse,
+  EvaluationResponse,
+  MetricsResponse,
+  SearchResponse,
+  SessionSummary,
+  UploadResponse,
+} from './types';
 
 function App() {
-  const [sessionId, setSessionId] = useState(getInitialSessionId);
+  const { sessionId, selectSession, createSession } = usePersistentSession();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const activeDocumentId = uploadResult?.document_id ?? null;
   const [uploadError, setUploadError] = useState('');
@@ -225,9 +42,6 @@ function App() {
   const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
   const [evaluationError, setEvaluationError] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [invoiceResult, setInvoiceResult] = useState<InvoiceResponse | null>(null);
-  const [invoiceError, setInvoiceError] = useState('');
-  const [isExtractingInvoice, setIsExtractingInvoice] = useState(false);
 
   const canAsk = useMemo(() => question.trim().length > 0 && !isAsking, [isAsking, question]);
 
@@ -342,9 +156,6 @@ function App() {
         question: normalizedQuestion,
         limit: String(searchLimit),
       });
-        if (activeDocumentId) {
-        params.set('document_id', activeDocumentId);
-      }
       if (activeDocumentId) {
         params.set('document_id', activeDocumentId);
       }
@@ -439,8 +250,7 @@ function App() {
             }
 
             if ('session_id' in data) {
-              localStorage.setItem(SESSION_STORAGE_KEY, data.session_id);
-              setSessionId(data.session_id);
+              selectSession(data.session_id);
               setChatMessages((messages) =>
                 messages.map((message) =>
                   message.id === optimisticId
@@ -453,8 +263,7 @@ function App() {
         }
       } else {
         const payload = (await response.json()) as ChatResponse;
-        localStorage.setItem(SESSION_STORAGE_KEY, payload.session_id);
-        setSessionId(payload.session_id);
+        selectSession(payload.session_id);
         setChatMessages(payload.history.map(mapHistoryMessage));
       }
 
@@ -465,38 +274,6 @@ function App() {
       setChatError(error instanceof Error ? error.message : 'No se pudo responder la pregunta.');
     } finally {
       setIsAsking(false);
-    }
-  }
-
-  async function handleExtractInvoice(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setInvoiceError('');
-    setInvoiceResult(null);
-
-    if (!invoiceFile) {
-      setInvoiceError('Selecciona una factura PDF para extraer sus campos.');
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', invoiceFile);
-    setIsExtractingInvoice(true);
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/extract-invoice`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(await parseApiError(response));
-      }
-
-      setInvoiceResult((await response.json()) as InvoiceResponse);
-    } catch (error) {
-      setInvoiceError(error instanceof Error ? error.message : 'No se pudo extraer la factura.');
-    } finally {
-      setIsExtractingInvoice(false);
     }
   }
 
@@ -536,17 +313,14 @@ function App() {
   }
 
   function handleNewSession() {
-    const nextSessionId = createSessionId();
-    localStorage.setItem(SESSION_STORAGE_KEY, nextSessionId);
-    setSessionId(nextSessionId);
+    createSession();
     setChatMessages([]);
     setQuestion('');
     setChatError('');
   }
 
   function handleSelectSession(nextSessionId: string) {
-    localStorage.setItem(SESSION_STORAGE_KEY, nextSessionId);
-    setSessionId(nextSessionId);
+    selectSession(nextSessionId);
     setChatError('');
   }
 
@@ -672,16 +446,10 @@ function App() {
             {searchError && <p className="status error">{searchError}</p>}
             {searchResult && (
               <div className="search-results">
-                <p className="muted">{searchResult.results.length} fuentes para: {searchResult.question}</p>
-                <ol className="sources-list">
-                  {searchResult.results.map((source) => (
-                    <li key={`${source.document_id}-${source.page_number}-${source.distance}`}>
-                      <strong>{source.filename} · pág. {source.page_number}</strong>
-                      <span className="source-distance">Distancia: {formatDistance(source.distance)}</span>
-                      <p>{source.text}</p>
-                    </li>
-                  ))}
-                </ol>
+                <p className="muted">
+                  {searchResult.results.length} fuentes para: {searchResult.question}
+                </p>
+                <SourceList sources={searchResult.results} />
               </div>
             )}
           </article>
@@ -725,7 +493,7 @@ function App() {
               Streaming
             </button>
           </div>
-    {activeDocumentId && (
+          {activeDocumentId && (
             <p className="active-document-notice">
               Consultando solo el PDF activo: <strong>{uploadResult?.filename}</strong>
             </p>
@@ -747,57 +515,7 @@ function App() {
           {chatError && <p className="status error">{chatError}</p>}
 
           <div className="messages" aria-live="polite">
-            {chatMessages.length === 0 ? (
-              <div className="empty-state">
-                <strong>Listo para la demo.</strong>
-                <span>Sube un PDF y pregunta sobre su contenido.</span>
-              </div>
-            ) : (
-              chatMessages.map((message) => (
-                <section className="message" key={message.id}>
-                  <p className="question">{message.question}</p>
-                  <p className="answer">{message.answer}</p>
-
-                  <div className="message-meta">
-                    <span>Modelo: {message.model}</span>
-                    <span>{message.usedLlm ? 'LLM activo' : 'Fallback local'}</span>
-                    <span>{formatDate(message.createdAt)}</span>
-                  </div>
-
-                  {message.agentSteps.length > 0 && (
-                    <details className="agent-steps">
-                      <summary>Pasos del agente</summary>
-                      <ol>
-                        {message.agentSteps.map((step, index) => (
-                          <li key={`${message.id}-${step.name}-${index}`}>
-                            <strong>{step.name}{step.role ? ` · ${step.role}` : ''}</strong>
-                            <span>{step.description}</span>
-                            {(step.tool || step.decision) && (
-                              <small>{step.tool ? `Herramienta: ${step.tool}` : ''}{step.tool && step.decision ? ' · ' : ''}{step.decision ? `Decisión: ${step.decision}` : ''}</small>
-                            )}
-                          </li>
-                        ))}
-                      </ol>
-                    </details>
-                  )}
-
-                  {message.sources.length > 0 && (
-                    <details className="sources-panel" open>
-                      <summary>Fuentes recuperadas</summary>
-                      <ol className="sources-list">
-                        {message.sources.map((source, index) => (
-                          <li key={`${message.id}-${source.document_id}-${index}`}>
-                            <strong>{source.filename} · pág. {source.page_number}</strong>
-                            <span className="source-distance">Distancia: {formatDistance(source.distance)}</span>
-                            <p>{source.text}</p>
-                          </li>
-                        ))}
-                      </ol>
-                    </details>
-                  )}
-                </section>
-              ))
-            )}
+            <ChatMessages messages={chatMessages} />
           </div>
         </article>
 
@@ -858,35 +576,6 @@ function App() {
               <span>Cobertura fuentes: {evaluation.source_coverage}</span>
               <span>Riesgo: {evaluation.hallucination_risk}</span>
               <span>{evaluation.grounded ? 'Respuesta grounded' : 'Revisar grounding'}</span>
-            </div>
-          )}
-
-          {/* <form className="invoice-form" onSubmit={handleExtractInvoice}>
-            <label className="mini-file">
-              <span>{invoiceFile ? invoiceFile.name : 'Factura PDF'}</span>
-              <input
-                accept="application/pdf"
-                type="file"
-                onChange={(event) => setInvoiceFile(event.target.files?.[0] ?? null)}
-              />
-            </label>
-             <button className="secondary-button full-width" type="submit" disabled={isExtractingInvoice}>
-              {isExtractingInvoice ? 'Extrayendo...' : 'Extraer factura'}
-            </button>  
-          </form> */}
-
-          {invoiceError && <p className="status error">{invoiceError}</p>}
-          {invoiceResult && (
-            <div className="evaluation-panel">
-              <strong>Factura extraída</strong>
-              <span>Cliente: {invoiceResult.cliente || 'No detectado'}</span>
-              <span>Importe: {invoiceResult.importe} {invoiceResult.moneda ?? ''}</span>
-              <span>Fecha: {invoiceResult.fecha ?? 'No detectada'}</span>
-              <span>Número: {invoiceResult.numero_factura ?? 'No detectado'}</span>
-              <span>Confianza: {invoiceResult.confidence}</span>
-              {invoiceResult.missing_fields.length > 0 && (
-                <small>Faltan: {invoiceResult.missing_fields.join(', ')}</small>
-              )}
             </div>
           )}
 

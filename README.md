@@ -1,63 +1,83 @@
 # AI Research Assistant
 
-MVP full-stack para entrevistas: sube PDFs académicos, extrae texto, indexa fragmentos en ChromaDB y conversa con un flujo RAG en español. Incluye backend FastAPI, frontend React, memoria por sesión, Docker y pruebas automatizadas.
+**Convierte colecciones de PDF en una base de conocimiento consultable, con respuestas
+trazables hasta el archivo y la página que las sustentan.** El producto combina una interfaz
+React, una API FastAPI y un pipeline RAG que puede ejecutarse sin servicios de IA de pago o
+usar un LLM externo cuando se configura una clave.
 
-## Estado de las 10 fases
+> Estado: aplicación ejecutable localmente y preparada para despliegue mediante imágenes
+> inmutables. Este repositorio no afirma mantener una demo pública activa; el pipeline queda
+> listo para conectarse a un host mediante secretos de GitHub Environment.
 
-| Fase | Objetivo | Estado |
-| --- | --- | --- |
-| 1 | Configurar proyecto y entorno | ✅ Listo |
-| 2 | Crear API FastAPI | ✅ Listo |
-| 3 | Subida de PDFs | ✅ Listo |
-| 4 | Extracción de texto | ✅ Listo |
-| 5 | Embeddings y ChromaDB | ✅ Listo |
-| 6 | Chat RAG funcionando | ✅ Listo |
-| 7 | Agentes de IA (flujo tipo LangGraph) | ✅ Listo |
-| 8 | Frontend React + historial y memoria | ✅ Listo |
-| 9 | Dockerización | ✅ Listo |
-| 10 | Deploy + README profesional | ✅ CI/CD, despliegue por SHA y rollback automático listos para conectar al host |
+## Por qué no es otro «chat con PDF»
 
-## Plataforma de producción
+- **Evidencia verificable:** muestra fragmentos, archivo, página y distancia de retrieval.
+- **Flujo auditable:** LangGraph separa coordinación, búsqueda, crítica, respuesta y citas.
+- **Ingesta robusta:** extracción de texto, fallback OCR y trabajos Redis/RQ para procesos largos.
+- **Calidad medible:** benchmark versionado, métricas IR, pruebas adversariales y quality gate.
+- **Aislamiento:** la API key determina el tenant y cada búsqueda filtra su `owner_id`.
+- **Operable:** trazas, métricas Prometheus, dashboard Grafana, alertas, backups y rollback.
 
-- **Asíncrono:** Redis + RQ desacoplan OCR e indexación mediante `POST /jobs/upload-pdf`.
-- **Calidad:** CI bloquea releases por cobertura, lint, tipos, build, seguridad adversarial y
-  umbrales versionados de evaluación RAG.
-- **Entrega:** imágenes GHCR inmutables por SHA, entorno protegido, health check y rollback.
-- **Operación:** prueba k6, métricas de latencia/tokens/coste, Prometheus, dashboard Grafana y
-  reglas de alerta.
-- **Continuidad y seguridad:** secretos por archivos montados, backups con checksum/retención,
-  restauración ensayable y decisiones registradas como ADR.
+## Demo rápida
 
-Consulte el [runbook de operaciones](docs/operations.md) y los
-[registros de decisiones](docs/adr/) antes de configurar producción.
+```bash
+docker compose up --build
+./scripts/demo.sh Guia.pdf "¿Cuál es la idea principal del documento?"
+```
+
+Abre la aplicación en `http://localhost:8080` y la documentación OpenAPI en
+`http://localhost:8000/docs`. Para una presentación sin Docker, consulta las instrucciones de
+[ejecución local](#ejecutar-localmente) y el [flujo de entrevista](#flujo-de-demo-para-entrevista).
+
+## Arquitectura del producto
+
+```mermaid
+flowchart LR
+    U[React UI / cliente MCP] -->|PDF, pregunta| API[FastAPI]
+    API -->|trabajo largo| Q[(Redis / RQ)]
+    Q --> OCR[PyMuPDF + OCR]
+    OCR --> CH[(ChromaDB)]
+    API --> G[LangGraph]
+    G -->|retrieval aislado por tenant| CH
+    G --> LLM[Groq o fallback local]
+    LLM -->|respuesta + fuentes| API
+    API --> OBS[(SQLite metrics / Prometheus)]
+    API --> U
+```
+
+## Capacidades de producción
+
+- **Entrega:** CI valida backend y frontend; el deploy publica imágenes GHCR por SHA y revierte
+  automáticamente si falla el health check.
+- **Procesamiento:** Redis + RQ desacoplan OCR e indexación mediante `POST /jobs/upload-pdf`.
+- **Observabilidad:** correlación por `X-Trace-ID`, métricas de latencia/tokens/coste, Prometheus,
+  Grafana y reglas de alerta.
+- **Continuidad:** backups con checksum y retención, restauración ensayable y decisiones en ADR.
+
+Consulta el [runbook de operaciones](docs/operations.md) y los [ADR](docs/adr/) antes de
+configurar un entorno remoto.
 
 ## Stack
 
-- **Backend:** FastAPI, PyMuPDF, ChromaDB, embeddings configurables (`HashingVectorizer` o Sentence Transformers), Groq opcional.
-- **Frontend:** React + TypeScript + Vite.
-- **Memoria:** historial por `session_id` persistido en JSON local.
-- **Agentes:** endpoint `/agent/chat` con flujo tipo LangGraph local: piensa, decide, usa búsqueda semántica como herramienta y responde con fuentes.
-- **Contenedores:** Dockerfiles para backend/frontend y `docker-compose.yml`.
+- **Backend:** FastAPI, PyMuPDF, ChromaDB, scikit-learn, Sentence Transformers y Groq opcional.
+- **Frontend:** React, TypeScript y Vite.
+- **Agentes e integración:** LangGraph y servidor MCP por stdio.
+- **Plataforma:** Redis, RQ, Docker Compose, Prometheus, Grafana y GitHub Actions.
 
 ## Estructura
 
 ```text
 ai-research-assistant/
 ├── backend/
-│   ├── app/
-│   │   ├── main.py        # API FastAPI
-│   │   ├── agent.py       # agente IA: pensar, decidir, herramientas y respuesta
-│   │   ├── pdf_loader.py  # extracción de texto PDF
-│   │   ├── rag.py         # chunks, embeddings y ChromaDB
-│   │   ├── llm.py         # respuesta RAG con Groq o fallback local
-│   │   └── memory.py      # historial por sesión
-│   └── tests/
+│   ├── app/           # API, RAG, agente, seguridad y observabilidad
+│   ├── evaluation/    # dataset y resultados reproducibles
+│   └── tests/         # integración, seguridad, retrieval y unidades
 ├── frontend/
-│   └── src/App.tsx        # UI de subida, chat y fuentes
+│   └── src/           # componentes, hooks, cliente y tipos
 └── docker-compose.yml
 ```
 
-## Nivel 7: Agentes de IA
+## Agente de investigación
 
 El proyecto ya incluye una capa agentica sobre el RAG clasico. El agente no solo llama al LLM: ejecuta un flujo controlado con pasos visibles para demo tecnica:
 
@@ -79,13 +99,13 @@ La respuesta incluye `agent_steps`, `agent_framework`, `sources`, `history`, `es
 
 ### Frameworks de agentes
 
-- **LangGraph:** es el framework recomendado para evolucionar este proyecto porque su modelo de nodos/estado encaja con el flujo implementado en `app/agent.py`. La version actual usa una implementacion local tipo LangGraph para mantener el MVP ligero y ejecutable offline.
+- **LangGraph:** es el framework recomendado para evolucionar este proyecto porque su modelo de nodos/estado encaja con el flujo implementado en `app/agent.py`. La versión actual implementa los pasos como nodos de un `StateGraph` compilado y mantiene las herramientas inyectables para facilitar las pruebas.
 - **CrewAI:** util si mas adelante quieres varios roles, por ejemplo investigador, critico y redactor.
 - **AutoGen:** util si quieres conversaciones multiagente al estilo Microsoft, con agentes que se revisan entre si.
 
-Para una entrevista, explica que ya existe la base agentica y que la migracion natural seria convertir cada paso (`pensar`, `decidir`, `usar_herramienta`, `responder`) en nodos de LangGraph.
+Para una entrevista, recorre cada nodo y explica por qué el routing explícito resulta más auditable que un bucle de herramientas abierto.
 
-## Nivel 8: MCP (Model Context Protocol)
+## MCP (Model Context Protocol)
 
 El backend tambien expone un servidor MCP por stdio para conectar el asistente
 con clientes compatibles con Model Context Protocol. Esto permite reutilizar la
@@ -239,6 +259,21 @@ El formato JSONL permite ampliar el benchmark con ejemplos revisados por humanos
 con datos privados. Para una comparación semántica de producción, configura además
 `sentence-transformers` en un entorno con el modelo descargado y registra la versión del modelo.
 
+### Baseline reproducible
+
+Resultados medidos sobre las **54 consultas** versionadas, con `k=3` (archivo completo en
+`evaluation/results.json`):
+
+| Configuración | Hit Rate@3 | MRR@3 | nDCG@3 |
+| --- | ---: | ---: | ---: |
+| Hashing, sin reranking | 0.6296 | 0.5123 | 0.5423 |
+| Hashing, con reranking | 0.6667 | 0.6049 | 0.6208 |
+| TF-IDF | **0.7593** | **0.6975** | **0.7134** |
+
+Los tamaños de chunk 40/80 dieron el mismo resultado porque cada caso actual cabe en un único
+chunk. El quality gate usa Hit Rate ≥ 0.60 y MRR ≥ 0.50: evita regresiones sobre este baseline,
+pero no convierte el corpus sintético en una afirmación de calidad de producción.
+
 ## Staging, autenticación y trazas
 
 1. Copia `.env.staging.example` a un archivo de secretos no versionado y cambia la API key,
@@ -320,3 +355,18 @@ Para una demo pública rápida:
 - Configura `VITE_API_BASE_URL` con la URL pública del backend.
 - Configura `ALLOWED_ORIGINS` con el dominio público del frontend.
 - Usa volúmenes persistentes para `CHROMA_DIR`, `HISTORY_DIR` y `UPLOAD_DIR`.
+
+## Trade-offs y límites de diseño
+
+| Decisión | Beneficio | Coste / evolución prevista |
+| --- | --- | --- |
+| `HashingVectorizer` por defecto | Arranque offline, determinista y sin descargar modelos | Menor calidad semántica; usar Sentence Transformers y versionar la colección para producción |
+| ChromaDB e historial locales | Demo simple y datos persistentes con Docker | Varias réplicas requieren vector store y base transaccional compartidos |
+| API keys por tenant | Aislamiento pequeño, fácil de demostrar y probar | Sustituir por OIDC/OAuth, roles, cuotas y rotación administrada |
+| Redis + RQ | Separa OCR/indexación del request y mantiene una operación sencilla | Añadir política explícita de reintentos, idempotencia y dead-letter queue |
+| Evaluación determinista local | Quality gate rápido y reproducible en cada PR | El corpus sintético no reemplaza evaluación humana con documentos reales |
+| Streaming por SSE | Interfaz progresiva y protocolo sencillo | Actualmente segmenta una respuesta completa; integrar streaming nativo del proveedor |
+
+La arquitectura prioriza que un reclutador pueda ejecutar y auditar el sistema localmente. Un
+servicio con tráfico real debería añadir object storage, eliminación completa por tenant,
+rate-limiting, secretos administrados, telemetría distribuida y pruebas periódicas de restauración.
