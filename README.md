@@ -15,7 +15,21 @@ MVP full-stack para entrevistas: sube PDFs académicos, extrae texto, indexa fra
 | 7 | Agentes de IA (flujo tipo LangGraph) | ✅ Listo |
 | 8 | Frontend React + historial y memoria | ✅ Listo |
 | 9 | Dockerización | ✅ Listo |
-| 10 | Deploy + README profesional | 🟡 README listo; deploy pendiente de conectar a un proveedor |
+| 10 | Deploy + README profesional | ✅ CI/CD, despliegue por SHA y rollback automático listos para conectar al host |
+
+## Plataforma de producción
+
+- **Asíncrono:** Redis + RQ desacoplan OCR e indexación mediante `POST /jobs/upload-pdf`.
+- **Calidad:** CI bloquea releases por cobertura, lint, tipos, build, seguridad adversarial y
+  umbrales versionados de evaluación RAG.
+- **Entrega:** imágenes GHCR inmutables por SHA, entorno protegido, health check y rollback.
+- **Operación:** prueba k6, métricas de latencia/tokens/coste, Prometheus, dashboard Grafana y
+  reglas de alerta.
+- **Continuidad y seguridad:** secretos por archivos montados, backups con checksum/retención,
+  restauración ensayable y decisiones registradas como ADR.
+
+Consulte el [runbook de operaciones](docs/operations.md) y los
+[registros de decisiones](docs/adr/) antes de configurar producción.
 
 ## Stack
 

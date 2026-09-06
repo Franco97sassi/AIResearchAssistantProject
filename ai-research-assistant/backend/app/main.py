@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agent import AgentStep, run_research_agent
@@ -30,6 +30,7 @@ from app.config import (
 from app.evaluation import evaluate_rag_response
 from app.guardrails import answer_has_required_sources, inspect_text
 from app.invoice import extract_invoice_fields
+from app.jobs import enqueue_pdf, fetch_job, job_belongs_to, serialize_job
 from app.llm import generate_rag_answer
 from app.observability import (
     collect_metrics,
@@ -37,6 +38,7 @@ from app.observability import (
     get_trace,
     init_observability,
     log_event,
+    prometheus_metrics,
 )
 from app.pdf_loader import extract_text_from_pdf
 from app.rag import SearchResult, index_pdf_text, search_similar_chunks
@@ -178,6 +180,11 @@ def health():
 @app.get("/metrics")
 def metrics(_principal: Principal = Depends(get_principal)):
     return collect_metrics()
+
+
+@app.get("/metrics/prometheus", response_class=PlainTextResponse)
+def metrics_prometheus(_principal: Principal = Depends(get_principal)):
+    return prometheus_metrics()
 
 
 @app.get("/traces/{trace_id}")
@@ -336,6 +343,35 @@ async def upload_pdf(file: UploadFile = File(...), principal: Principal = Depend
     }
 
 
+@app.post("/jobs/upload-pdf", status_code=status.HTTP_202_ACCEPTED)
+async def enqueue_pdf_upload(
+    file: UploadFile = File(...), principal: Principal = Depends(get_principal)
+):
+    """Persist an upload quickly and delegate OCR/indexing to an RQ worker."""
+    original_filename, safe_filename, destination, bytes_written = await _save_pdf_upload(file)
+    try:
+        job = await run_in_threadpool(
+            enqueue_pdf, destination, original_filename, safe_filename, principal.tenant_id
+        )
+    except Exception as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=503, detail="La cola de procesamiento no esta disponible"
+        ) from exc
+    return {"job_id": job.id, "status": "queued", "size_bytes": bytes_written}
+
+
+@app.get("/jobs/{job_id}")
+async def get_pdf_job(job_id: str, principal: Principal = Depends(get_principal)):
+    try:
+        job = await run_in_threadpool(fetch_job, job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado") from exc
+    if not job_belongs_to(job, principal.tenant_id):
+        raise HTTPException(status_code=404, detail="Trabajo no encontrado")
+    return serialize_job(job)
+
+
 @app.post("/extract-invoice", response_model=InvoiceExtractionResponse)
 async def extract_invoice(
     file: UploadFile = File(...), _principal: Principal = Depends(get_principal)
@@ -442,6 +478,7 @@ async def chat_with_pdfs(request: ChatRequest, principal: Principal = Depends(ge
         model=rag_answer.model,
         source_count=len(sources),
         estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0),
+        estimated_output_tokens=max(1, len(answer_text) // 4),
         guardrails=guardrail,
         sources_validated=sources_validated,
     )
@@ -496,6 +533,7 @@ async def stream_chat_with_pdfs(
         model=rag_answer.model,
         source_count=len(sources),
         estimated_tokens=getattr(rag_answer, "estimated_prompt_tokens", 0),
+        estimated_output_tokens=max(1, len(rag_answer.answer) // 4),
         guardrails=guardrail,
     )
 

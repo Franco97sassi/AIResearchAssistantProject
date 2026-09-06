@@ -9,6 +9,8 @@ venv/
 # Environment Variables
 .env
 *.env
+secrets/
+backups/
 
 # Chroma
 chroma_db/

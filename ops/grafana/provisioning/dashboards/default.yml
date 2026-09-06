@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: AI Operations
+    folder: AI Research Assistant
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
