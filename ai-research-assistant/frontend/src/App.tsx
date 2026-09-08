@@ -326,51 +326,81 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="hero hero-copy-block">
+      <nav className="topbar" aria-label="Navegación principal">
+        <a className="brand" href="#top" aria-label="Research OS, inicio">
+          <span className="brand-mark" aria-hidden="true">
+            <span />
+          </span>
+          <span>Research<span className="brand-accent">OS</span></span>
+        </a>
+        <div className="topbar-links">
+          <a href="#knowledge">Knowledge</a>
+          <a href="#chat-panel">Playground</a>
+          <a href="#observability">Observability</a>
+        </div>
+        <div className="system-status">
+          <span className="status-dot" />
+          API ready
+        </div>
+      </nav>
+
+      <section className="hero hero-copy-block" id="top">
         <div className="hero-content">
-          <p className="eyebrow">Portfolio project · RAG Agent</p>
-          <h1>Asistente IA para investigación documental</h1>
+          <div className="release-badge"><span>NEW</span> Agentic RAG workspace <b>→</b></div>
+          <p className="eyebrow">Evidence-first AI research</p>
+          <h1>Convierte documentos en <span>respuestas verificables.</span></h1>
           <p className="hero-copy">
-            Una experiencia pulida para demostrar carga de PDFs, búsqueda semántica,
-            respuestas con fuentes, memoria conversacional, streaming y evaluación RAG.
+            Un workspace de investigación con RAG agéntico, recuperación semántica y citas a nivel
+            de página. Diseñado para respuestas fiables, no para cajas negras.
           </p>
           <div className="hero-actions">
-            <a className="primary-link" href="#chat-panel">Probar asistente</a>
-            <span className="api-pill">Sesión {sessionId.slice(0, 8)}</span>
+            <a className="primary-link" href="#chat-panel">Abrir playground <span>↗</span></a>
+            <a className="text-link" href="#knowledge">Indexar un documento <span>→</span></a>
+          </div>
+          <div className="trust-row" aria-label="Capacidades del sistema">
+            <span>LangGraph</span><i />
+            <span>ChromaDB</span><i />
+            <span>FastAPI</span><i />
+            <span>OpenTelemetry</span>
           </div>
         </div>
 
         <div className="portfolio-panel" aria-label="Resumen del proyecto">
-          <div className="terminal-card">
-            <span className="terminal-dot" />
-            <span className="terminal-dot" />
-            <span className="terminal-dot" />
-            <p>pipeline.status</p>
-            <strong>PDF → Chunks → Embeddings → ChromaDB → Agent</strong>
+          <div className="panel-glow" />
+          <div className="pipeline-header">
+            <span>LIVE PIPELINE</span>
+            <div><i /> Operational</div>
           </div>
-
+          <div className="pipeline-visual" aria-label="PDF a respuesta mediante pipeline RAG">
+            <div className="pipeline-node active"><span>01</span><strong>Ingest</strong><small>PDF · OCR</small></div>
+            <div className="pipeline-line"><i /></div>
+            <div className="pipeline-node"><span>02</span><strong>Retrieve</strong><small>Vector search</small></div>
+            <div className="pipeline-line"><i /></div>
+            <div className="pipeline-node"><span>03</span><strong>Reason</strong><small>Agent graph</small></div>
+          </div>
           <div className="stat-grid">
             <div>
               <strong>{uploadResult?.chunks_indexed ?? '—'}</strong>
-              <span>chunks indexados</span>
+              <span>CHUNKS</span>
             </div>
             <div>
               <strong>{chatMessages.length}</strong>
-              <span>mensajes</span>
+              <span>MESSAGES</span>
             </div>
             <div>
               <strong>{metrics?.event_count ?? '—'}</strong>
-              <span>eventos</span>
+              <span>TRACES</span>
             </div>
           </div>
+          <div className="session-strip"><span>SESSION</span><code>{sessionId.slice(0, 8)}</code><i>encrypted</i></div>
         </div>
       </section>
 
       <section className="workspace">
-        <div className="tool-panel">
+        <div className="tool-panel" id="knowledge">
           <article className="card upload-card">
             <div className="card-heading">
-              <span className="card-icon">PDF</span>
+              <span className="card-icon" aria-hidden="true">01</span>
               <div>
                 <h2>Base de conocimiento</h2>
                 <p>Sube papers, apuntes o documentación. El backend extrae texto e indexa fragmentos consultables.</p>
@@ -412,7 +442,7 @@ function App() {
 
           <article className="card search-card">
             <div className="card-heading">
-              <span className="card-icon">SRC</span>
+              <span className="card-icon" aria-hidden="true">02</span>
               <div>
                 <h2>Explorar evidencia</h2>
                 <p>Inspecciona los fragmentos que recuperará el asistente antes de generar una respuesta.</p>
@@ -458,7 +488,7 @@ function App() {
         <article className="card chat-card" id="chat-panel">
           <div className="chat-header">
             <div>
-              <p className="eyebrow">Demo interactiva</p>
+              <p className="eyebrow">AI Playground</p>
               <h2>Preguntar al asistente</h2>
               <p>El modo agente ejecuta un grafo con roles de coordinación, búsqueda, crítica y citación.</p>
             </div>
@@ -519,7 +549,7 @@ function App() {
           </div>
         </article>
 
-        <aside className="history-rail">
+        <aside className="history-rail" id="observability">
           <div className="rail-heading">
             <h2>Panel de control</h2>
             <p>Métricas, evaluación e historial para mostrar el proyecto de forma profesional.</p>
