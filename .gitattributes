@@ -5,4 +5,5 @@ ai-research-assistant/backend/requirements.txt text eol=lf diff
 # Explicitly classify repository assets and generated databases as binary.
 *.pdf binary
 *.png binary
+*.mp4 binary
 *.sqlite3 binary
