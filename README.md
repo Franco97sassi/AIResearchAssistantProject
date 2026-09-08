@@ -11,9 +11,25 @@ usar un LLM externo cuando se configura una clave.
 
 ## Video demo
 
-[Ver una demostración completa del proyecto en Google Drive](https://drive.google.com/file/d/1YmPpkY_gVoh8B10rHAgGo5wXLBIbrFsZ/view).
+[Ver la demostración completa incluida en el repositorio](docs/assets/video/ai-research-assistant-demo.mp4)
+o [reproducirla en Google Drive](https://drive.google.com/file/d/1YmPpkY_gVoh8B10rHAgGo5wXLBIbrFsZ/view).
 El recorrido muestra la experiencia que puede reproducirse localmente con los documentos seguros
-generables desde [`samples/`](samples/README.md).
+generables desde [`samples/`](samples/README.md). El archivo del repositorio permite descargar o
+reproducir la demo sin depender del enlace externo.
+
+## Capturas de pantalla
+
+### Inicio y estado del pipeline
+
+![Página de inicio de ResearchOS con el pipeline de ingesta, recuperación y razonamiento](docs/assets/images/researchos-home-pipeline.png)
+
+### Playground, respuesta y fuentes verificables
+
+![Playground de ResearchOS con un PDF indexado, una respuesta y sus fuentes por página](docs/assets/images/researchos-playground-sources.png)
+
+### Exploración de evidencia e historial
+
+![Vista de ResearchOS para explorar evidencia, consultar al asistente y revisar el historial](docs/assets/images/researchos-evidence-history.png)
 
 ## Por qué no es otro «chat con PDF»
 
