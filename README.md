@@ -9,6 +9,12 @@ usar un LLM externo cuando se configura una clave.
 > inmutables. Este repositorio no afirma mantener una demo pública activa; el pipeline queda
 > listo para conectarse a un host mediante secretos de GitHub Environment.
 
+## Video demo
+
+[Ver una demostración completa del proyecto en Google Drive](https://drive.google.com/file/d/1YmPpkY_gVoh8B10rHAgGo5wXLBIbrFsZ/view).
+El recorrido muestra la experiencia que puede reproducirse localmente con los documentos seguros
+generables desde [`samples/`](samples/README.md).
+
 ## Por qué no es otro «chat con PDF»
 
 - **Evidencia verificable:** muestra fragmentos, archivo, página y distancia de retrieval.
@@ -313,6 +319,11 @@ petición mediante `GET /traces/{trace_id}`. No expongas `/metrics` o `/traces` 
 7. Explica que el backend aplica un presupuesto de contexto con `MAX_CONTEXT_TOKENS`.
 8. Reinicia historial desde la UI si quieres comenzar otra conversación.
 
+Para evitar usar información privada durante la presentación, el repositorio permite generar dos
+PDFs pequeños y ficticios: una nota técnica sobre RAG y un informe de energía solar. El comando de
+generación, las preguntas sugeridas y el origen de sus datos están documentados en
+[`samples/README.md`](samples/README.md).
+
 ### Demo reproducible por terminal
 
 Con los contenedores en ejecución, el script comprueba la API, sube un PDF,
@@ -343,6 +354,7 @@ mypy
 ```bash
 cd ai-research-assistant/frontend
 npm run build
+npm run test:e2e
 ```
 
 GitHub Actions ejecuta estas comprobaciones en cada push y pull request y publica

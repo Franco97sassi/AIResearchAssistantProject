@@ -61,5 +61,9 @@ jobs:
           cache-dependency-path: ai-research-assistant/frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
       - name: Build
         run: npm run build
+      - name: End-to-end test
+        run: npm run test:e2e
