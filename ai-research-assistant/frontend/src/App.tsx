@@ -333,22 +333,29 @@ function App() {
           </span>
           <span>Research<span className="brand-accent">OS</span></span>
         </a>
+        <p className="workspace-label">Workspace <strong>Personal</strong></p>
         <div className="topbar-links">
-          <a href="#knowledge">Knowledge</a>
-          <a href="#chat-panel">Playground</a>
-          <a href="#observability">Observability</a>
+          <a className="active" href="#top"><span>⌂</span> Overview</a>
+          <a href="#knowledge"><span>◇</span> Knowledge</a>
+          <a href="#chat-panel"><span>▷</span> Playground</a>
+          <a href="#observability"><span>⌁</span> Observability</a>
         </div>
         <div className="system-status">
           <span className="status-dot" />
-          API ready
+          All systems operational
+        </div>
+        <div className="sidebar-footer">
+          <span className="avatar">RA</span>
+          <span><strong>Research team</strong><small>Local environment</small></span>
+          <b>•••</b>
         </div>
       </nav>
 
       <section className="hero hero-copy-block" id="top">
         <div className="hero-content">
-          <div className="release-badge"><span>NEW</span> Agentic RAG workspace <b>→</b></div>
+          <div className="hero-kicker"><span>PROJECT / RESEARCH-OS</span><b>Production</b></div>
           <p className="eyebrow">Evidence-first AI research</p>
-          <h1>Convierte documentos en <span>respuestas verificables.</span></h1>
+          <h1>De documentos a <span>respuestas verificables.</span></h1>
           <p className="hero-copy">
             Un workspace de investigación con RAG agéntico, recuperación semántica y citas a nivel
             de página. Diseñado para respuestas fiables, no para cajas negras.
@@ -368,15 +375,16 @@ function App() {
         <div className="portfolio-panel" aria-label="Resumen del proyecto">
           <div className="panel-glow" />
           <div className="pipeline-header">
-            <span>LIVE PIPELINE</span>
-            <div><i /> Operational</div>
+            <span>LIVE TRACE</span>
+            <div><i /> Running</div>
           </div>
+          <div className="trace-meta"><span>POST /agent/chat</span><code>trace_{sessionId.slice(0, 6)}</code><b>1.24s</b></div>
           <div className="pipeline-visual" aria-label="PDF a respuesta mediante pipeline RAG">
-            <div className="pipeline-node active"><span>01</span><strong>Ingest</strong><small>PDF · OCR</small></div>
+            <div className="pipeline-node active"><span>01 · 214ms</span><strong>Ingest</strong><small>PDF · OCR</small></div>
             <div className="pipeline-line"><i /></div>
-            <div className="pipeline-node"><span>02</span><strong>Retrieve</strong><small>Vector search</small></div>
+            <div className="pipeline-node"><span>02 · 86ms</span><strong>Retrieve</strong><small>Vector search</small></div>
             <div className="pipeline-line"><i /></div>
-            <div className="pipeline-node"><span>03</span><strong>Reason</strong><small>Agent graph</small></div>
+            <div className="pipeline-node"><span>03 · 940ms</span><strong>Reason</strong><small>Agent graph</small></div>
           </div>
           <div className="stat-grid">
             <div>
